@@ -2,6 +2,8 @@
 PLAN: "feat: the supervisor's HTTP API — status, check and apply, behind a bearer token"
 EXECUTOR: jules
 REVIEWER: none
+STATUS: running
+SESSION: 4194968978655066060
 ---
 
 > Read AGENTS.md at the repo root before any change. Design: `docs/ARCHITECTURE.md` («Talking to the supervisor»).
