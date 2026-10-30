@@ -8,4 +8,6 @@ See [Architecture](docs/ARCHITECTURE.md), [Check flow](docs/diagrams/CHECK_FLOW.
 Example usage:
 ```go
 m, ok, err := selfupdate.Checker{Releases: selfupdate.GitHub{Repo: "acme/shop", Token: token}, PublicKey: pub}.Check(state)
+
+next, err := selfupdate.Applier{Engine: selfupdate.Compose{Dir: dir}, Dir: dir}.Apply(state, m)
 ```
