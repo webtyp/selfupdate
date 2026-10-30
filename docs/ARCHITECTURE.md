@@ -34,15 +34,15 @@ Everything of one app lives in `/opt/<app>/`, readable only by root (`<app>` is 
 the internet door only on the internal network) · `cloudflared` (the tunnel, pinned version) · `selfupdate` (this
 supervisor; mounts `/var/run/docker.sock` and `/opt/<app>`; listens on the internal network only, port 8080).
 
-## Talking to the supervisor
+## Talking to the supervisor — [diagram](diagrams/PHASES.md)
 
 Only the app talks to it, over the Compose internal network, with `Authorization: Bearer <secrets/supervisor_token>`:
 
 | Request | Answer |
 |---|---|
-| `GET /status` | running version, available version (if any), phase (`idle`, `checking`, `available`, `applying`, `rolled_back`), last message |
-| `POST /check` | looks for a newer verified version; answers the new status |
-| `POST /apply` | starts switching to the available version; answers at once, progress is read with `GET /status` |
+| `GET /status` | running version, available version (if any), phase (`idle`, `checking`, `available`, `applying`, `rolled_back`), last message (200, 401 without the token, 405, 404) |
+| `POST /check` | looks for a newer verified version; answers the new status (200, 409 busy, 502 when the check fails) |
+| `POST /apply` | starts switching to the available version; answers at once, progress is read with `GET /status` (202 for apply, 409 busy or nothing to apply) |
 
 ## Checking for a version — [diagram](diagrams/CHECK_FLOW.md)
 
