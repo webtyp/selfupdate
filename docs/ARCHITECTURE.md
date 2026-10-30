@@ -53,9 +53,8 @@ as the Release tag — a manifest signed for another version is refused.
 
 ## Switching — [diagram](diagrams/APPLY_FLOW.md)
 
-Dump the database → pull `image@digest` → write `APP_IMAGE` in `.env` → recreate only the `app` service → wait for
+Dump the database → pull `image@digest` → **migrate (owner user, the new image's `migrate` service)** → write `APP_IMAGE` in `.env` → recreate only the `app` service → wait for
 `/health`. The app listens on `AppPort` (8443, office door) and `AppInternetPort` (8444, internet door) inside its
 container, and the health probe checks the certificate against `APP_DOMAIN`. Healthy: the new version is current.
 Not healthy within the limit: write the previous `APP_IMAGE` back, recreate `app`, and mark the version as failed.
-The app migrates its own tables when it starts (`ddl.Sync`: it only adds; a column with data is never dropped),
-so going back to the previous image leaves the database usable.
+The supervisor migrates; the app runs with the user that only reads and writes rows.

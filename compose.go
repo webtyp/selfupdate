@@ -38,27 +38,45 @@ const (
 // ErrNoDomain: .env has no APP_DOMAIN, so the health probe cannot check the certificate.
 var ErrNoDomain = errors.New("selfupdate: .env has no APP_DOMAIN")
 
+// Command is one docker invocation the supervisor makes.
+type Command struct {
+	Dir    string
+	Env    []string  // extra KEY=VALUE pairs on top of the process environment
+	Stdout io.Writer // nil = discarded
+	Name   string
+	Args   []string
+}
+
 // Compose is the Engine over the docker CLI, run in the app's folder.
 // Example: selfupdate.Compose{Dir: selfupdate.AppDir("shop")}
 type Compose struct {
 	Dir   string
-	Run   func(dir string, stdout io.Writer, name string, args ...string) error // nil = os/exec
-	Probe func() bool                                                       // nil = HTTPS GET of the app's /health
+	Run   func(c Command) error // nil = os/exec
+	Probe func() bool           // nil = HTTPS GET of the app's /health
 }
 
 var _ Engine = Compose{}
 
 func (c Compose) Backup(w io.Writer) error {
-	return c.run(w, cmdDocker, argCompose, argExec, argNoTTY, ServiceDB, argShell, argShellC, dumpScript)
+	return c.run(w, nil, cmdDocker, argCompose, argExec, argNoTTY, ServiceDB, argShell, argShellC, dumpScript)
 }
 
-func (c Compose) Pull(ref string) error { return c.run(io.Discard, cmdDocker, argPull, ref) }
+func (c Compose) Pull(ref string) error { return c.run(io.Discard, nil, cmdDocker, argPull, ref) }
+
+const argRun = "run"
+const argRemove = "--rm"
+
+// Migrate runs the migration program of image ref (the compose service "migrate", owner user)
+// without touching .env: APP_IMAGE in the process environment wins over .env for this one command.
+func (c Compose) Migrate(ref string) error {
+	return c.run(io.Discard, []string{EnvAppImage + envSeparator + ref}, cmdDocker, argCompose, argRun, argRemove, argNoDeps, ServiceMigrate)
+}
 
 func (c Compose) Switch(ref string) error {
 	if err := setEnv(filepath.Join(c.Dir, FileEnv), EnvAppImage, ref); err != nil {
 		return err
 	}
-	return c.run(io.Discard, cmdDocker, argCompose, argUp, argDetach, argNoDeps, ServiceApp)
+	return c.run(io.Discard, nil, cmdDocker, argCompose, argUp, argDetach, argNoDeps, ServiceApp)
 }
 
 // Healthy asks the app's office door for /health over the internal network and
@@ -83,13 +101,17 @@ func (c Compose) Healthy() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-func (c Compose) run(stdout io.Writer, name string, args ...string) error {
+func (c Compose) run(stdout io.Writer, env []string, name string, args ...string) error {
+	cmdArgs := Command{Dir: c.Dir, Env: env, Stdout: stdout, Name: name, Args: args}
 	if c.Run != nil {
-		return c.Run(c.Dir, stdout, name, args...)
+		return c.Run(cmdArgs)
 	}
 	var stderr bytes.Buffer
 	cmd := exec.Command(name, args...)
 	cmd.Dir = c.Dir
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

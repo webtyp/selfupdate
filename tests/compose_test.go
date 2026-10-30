@@ -2,7 +2,6 @@ package tests
 
 import (
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,22 +10,26 @@ import (
 	"webtyp.com/selfupdate"
 )
 
-func fakeRun(dir string, stdout io.Writer, name string, args ...string) error {
-	stdout.Write([]byte("dump"))
+func fakeRun(cmd selfupdate.Command) error {
+	if cmd.Stdout != nil {
+		cmd.Stdout.Write([]byte("dump"))
+	}
 	return nil
 }
 
-func fakeRunErr(dir string, stdout io.Writer, name string, args ...string) error {
+func fakeRunErr(cmd selfupdate.Command) error {
 	return errors.New("run failed")
 }
 
 func TestCompose_Backup(t *testing.T) {
 	dir := t.TempDir()
 	var runDir, runCmd string
-	run := func(d string, out io.Writer, n string, a ...string) error {
-		runDir = d
-		runCmd = n + " " + strings.Join(a, " ")
-		out.Write([]byte("dump"))
+	run := func(cmd selfupdate.Command) error {
+		runDir = cmd.Dir
+		runCmd = cmd.Name + " " + strings.Join(cmd.Args, " ")
+		if cmd.Stdout != nil {
+			cmd.Stdout.Write([]byte("dump"))
+		}
 		return nil
 	}
 	c := selfupdate.Compose{Dir: dir, Run: run, Probe: func() bool { return true }}
@@ -52,8 +55,8 @@ func TestCompose_Backup(t *testing.T) {
 func TestCompose_Pull(t *testing.T) {
 	dir := t.TempDir()
 	var runCmd string
-	run := func(d string, out io.Writer, n string, a ...string) error {
-		runCmd = n + " " + strings.Join(a, " ")
+	run := func(cmd selfupdate.Command) error {
+		runCmd = cmd.Name + " " + strings.Join(cmd.Args, " ")
 		return nil
 	}
 	c := selfupdate.Compose{Dir: dir, Run: run}
@@ -75,8 +78,8 @@ func TestCompose_Switch(t *testing.T) {
 	os.WriteFile(envPath, []byte(initialEnv), 0600)
 
 	var runCmd string
-	run := func(d string, out io.Writer, n string, a ...string) error {
-		runCmd = n + " " + strings.Join(a, " ")
+	run := func(cmd selfupdate.Command) error {
+		runCmd = cmd.Name + " " + strings.Join(cmd.Args, " ")
 		return nil
 	}
 	c := selfupdate.Compose{Dir: dir, Run: run}
@@ -109,7 +112,7 @@ func TestCompose_SwitchAddsMissingKey(t *testing.T) {
 	initialEnv := "APP_DOMAIN=app.example.com\n"
 	os.WriteFile(envPath, []byte(initialEnv), 0600)
 
-	c := selfupdate.Compose{Dir: dir, Run: func(d string, out io.Writer, n string, a ...string) error { return nil }}
+	c := selfupdate.Compose{Dir: dir, Run: func(cmd selfupdate.Command) error { return nil }}
 
 	err := c.Switch("new")
 	if err != nil {
@@ -120,6 +123,45 @@ func TestCompose_SwitchAddsMissingKey(t *testing.T) {
 	expectedEnv := "APP_DOMAIN=app.example.com\nAPP_IMAGE=new\n"
 	if string(envContent) != expectedEnv {
 		t.Errorf("expected env %q, got %q", expectedEnv, envContent)
+	}
+}
+
+func TestCompose_Migrate(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, selfupdate.FileEnv)
+	initialEnv := "APP_DOMAIN=app.example.com\nAPP_IMAGE=old\n"
+	os.WriteFile(envPath, []byte(initialEnv), 0600)
+
+	var runCmd string
+	var runDir string
+	var runEnv []string
+	run := func(cmd selfupdate.Command) error {
+		runCmd = cmd.Name + " " + strings.Join(cmd.Args, " ")
+		runDir = cmd.Dir
+		runEnv = cmd.Env
+		return nil
+	}
+	c := selfupdate.Compose{Dir: dir, Run: run}
+
+	err := c.Migrate("new")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedCmd := "docker compose run --rm --no-deps migrate"
+	if runCmd != expectedCmd {
+		t.Errorf("expected cmd %q, got %q", expectedCmd, runCmd)
+	}
+	if runDir != dir {
+		t.Errorf("expected dir %q, got %q", dir, runDir)
+	}
+	if len(runEnv) != 1 || runEnv[0] != "APP_IMAGE=new" {
+		t.Errorf("expected env %q, got %q", []string{"APP_IMAGE=new"}, runEnv)
+	}
+
+	envContent, _ := os.ReadFile(envPath)
+	if string(envContent) != initialEnv {
+		t.Errorf("expected .env to remain unchanged %q, got %q", initialEnv, envContent)
 	}
 }
 

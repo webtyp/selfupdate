@@ -15,6 +15,8 @@ const (
 	ServiceApp        = "app"
 	ServiceTunnel     = "cloudflared"
 	ServiceSupervisor = "selfupdate"
+	// ServiceMigrate is the one-off service that runs the app image's migration program with the owner user.
+	ServiceMigrate    = "migrate"
 	SupervisorPort    = "8080"
 
 	// AppPort and AppInternetPort are the ports the app listens on inside its
