@@ -18,6 +18,8 @@ var (
 	ErrUnhealthy = errors.New("selfupdate: the new version did not become healthy; the previous one is back")
 	// ErrRollback: going back to the previous version failed too.
 	ErrRollback = errors.New("selfupdate: could not return to the previous version")
+	// ErrMigrate: the new version's migration failed; nothing was switched.
+	ErrMigrate = errors.New("selfupdate: the new version's migration failed; nothing was switched")
 )
 
 const (
@@ -35,6 +37,7 @@ const (
 type Engine interface {
 	Backup(w io.Writer) error // dump the database into w
 	Pull(ref string) error    // fetch image@digest
+	Migrate(ref string) error // run the migration program of image ref with the owner user
 	Switch(ref string) error  // write APP_IMAGE=ref in .env and recreate only the app service
 	Healthy() bool            // one probe of the app's /health
 }
@@ -60,6 +63,15 @@ func (a Applier) Apply(s State, m update.Manifest) (State, error) {
 	ref := m.Reference()
 	if err := a.Engine.Pull(ref); err != nil {
 		return s, err
+	}
+	if err := a.Engine.Migrate(ref); err != nil {
+		failed := s
+		failed.Failed = append(append([]string(nil), s.Failed...), m.Version)
+		result := fmt.Errorf("%w: %v", ErrMigrate, err)
+		if saveErr := failed.Save(a.statePath()); saveErr != nil {
+			return failed, errors.Join(result, saveErr)
+		}
+		return failed, errors.Join(result, err)
 	}
 	switchErr := a.Engine.Switch(ref)
 	if switchErr == nil && a.waitHealthy() {

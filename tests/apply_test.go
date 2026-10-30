@@ -19,6 +19,7 @@ type fakeEngine struct {
 	calls        []string
 	backupErr    error
 	pullErr      error
+	migrateErr   error
 	switchErrFor string
 	switchErr    error
 	healthy      bool
@@ -36,6 +37,11 @@ func (e *fakeEngine) Backup(w io.Writer) error {
 func (e *fakeEngine) Pull(ref string) error {
 	e.calls = append(e.calls, "pull "+ref)
 	return e.pullErr
+}
+
+func (e *fakeEngine) Migrate(ref string) error {
+	e.calls = append(e.calls, "migrate "+ref)
+	return e.migrateErr
 }
 
 func (e *fakeEngine) Switch(ref string) error {
@@ -101,7 +107,7 @@ func TestApply_Healthy(t *testing.T) {
 	}
 
 	newRef := m.Reference()
-	expectedCalls := []string{"backup", "pull " + newRef, "switch " + newRef, "healthy"}
+	expectedCalls := []string{"backup", "pull " + newRef, "migrate " + newRef, "switch " + newRef, "healthy"}
 	if !reflect.DeepEqual(eng.calls, expectedCalls) {
 		t.Errorf("expected calls %v, got %v", expectedCalls, eng.calls)
 	}
@@ -210,6 +216,63 @@ func TestApply_Unhealthy(t *testing.T) {
 	saved, _ := selfupdate.LoadState(filepath.Join(dir, selfupdate.FileState))
 	if !reflect.DeepEqual(saved, expectedNext) {
 		t.Errorf("expected saved state %v, got %v", expectedNext, saved)
+	}
+}
+
+func TestApply_MigrateFails(t *testing.T) {
+	dir := t.TempDir()
+	m := defaultManifest()
+	s := defaultState()
+	fakeErr := errors.New("db disconnected")
+	eng := &fakeEngine{migrateErr: fakeErr}
+	clk := &clock{}
+	applier := selfupdate.Applier{
+		Engine: eng,
+		Dir:    dir,
+		Wait:   10 * time.Second,
+		Every:  time.Second,
+		Now:    clk.Now,
+		Sleep:  clk.Sleep,
+	}
+
+	next, err := applier.Apply(s, m)
+	if !errors.Is(err, selfupdate.ErrMigrate) {
+		t.Errorf("Apply() err = %v, want ErrMigrate", err)
+	}
+	if !strings.Contains(err.Error(), fakeErr.Error()) {
+		t.Errorf("Apply() err = %v, want to contain %v", err, fakeErr)
+	}
+
+	expectedCalls := []string{"backup", "pull " + m.Reference(), "migrate " + m.Reference()}
+	if !reflect.DeepEqual(eng.calls, expectedCalls) {
+		t.Errorf("calls = %q, want %q", eng.calls, expectedCalls)
+	}
+
+	if next.Version != s.Version {
+		t.Errorf("next.Version = %q, want %q", next.Version, s.Version)
+	}
+	if next.Image != s.Image {
+		t.Errorf("next.Image = %q, want %q", next.Image, s.Image)
+	}
+	failedContains := false
+	for _, f := range next.Failed {
+		if f == m.Version {
+			failedContains = true
+		}
+	}
+	if !failedContains {
+		t.Errorf("next.Failed = %q, want it to contain %q", next.Failed, m.Version)
+	}
+
+	saved, _ := selfupdate.LoadState(filepath.Join(dir, selfupdate.FileState))
+	failedContainsSaved := false
+	for _, f := range saved.Failed {
+		if f == m.Version {
+			failedContainsSaved = true
+		}
+	}
+	if !failedContainsSaved {
+		t.Errorf("saved.Failed = %q, want it to contain %q", saved.Failed, m.Version)
 	}
 }
 
