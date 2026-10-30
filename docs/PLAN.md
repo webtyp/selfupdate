@@ -2,8 +2,10 @@
 PLAN: "feat: apply a verified version — backup, pull, switch, health wait, rollback"
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 5508372715093224670
+PR: https://github.com/webtyp/selfupdate/pull/2
+REVIEWED_COMMIT: 9df67f2e0798673f1bae6039fa0ded78f62d1873
 ---
 
 > Read AGENTS.md at the repo root before any change. Design: `docs/ARCHITECTURE.md`; the flow this plan builds is

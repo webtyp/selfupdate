@@ -17,6 +17,14 @@ const (
 	ServiceSupervisor = "selfupdate"
 	SupervisorPort    = "8080"
 
+	// AppPort and AppInternetPort are the ports the app listens on inside its
+	// container: the office door (published on the host's 443) and the internet
+	// door (reached only by cloudflared on the internal network).
+	AppPort         = "8443"
+	AppInternetPort = "8444"
+	// EnvAppDomain is the name the app is reached by; the same key httpd.FromEnv reads.
+	EnvAppDomain = "APP_DOMAIN"
+
 	// EnvAppImage is the .env key the compose reads as the app's image (image@digest).
 	EnvAppImage = "APP_IMAGE"
 

@@ -1,6 +1,6 @@
 # Apply flow
 
-What the supervisor does on `POST /apply`. Built by a later plan; every branch will have a test.
+What the supervisor does on `POST /apply`. Every branch has a test in `tests/apply_test.go`.
 
 ```mermaid
 flowchart TD
