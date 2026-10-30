@@ -2,6 +2,8 @@
 PLAN: "feat!: migrate the new version before switching (owner user), Command for docker runs"
 EXECUTOR: jules
 REVIEWER: none
+STATUS: running
+SESSION: 8441968537191518885
 ---
 
 > Read AGENTS.md at the repo root before any change. Design: `docs/ARCHITECTURE.md`; flow: `docs/diagrams/APPLY_FLOW.md`.
