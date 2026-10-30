@@ -159,13 +159,19 @@ func TestHandler_ApplyAccepted(t *testing.T) {
 	// 1. Check
 	req1, _ := http.NewRequest(http.MethodPost, srv.URL+"/check", nil)
 	req1.Header.Set("Authorization", "Bearer secret")
-	resp1, _ := http.DefaultClient.Do(req1)
+	resp1, err := http.DefaultClient.Do(req1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	resp1.Body.Close()
 
 	// 2. Apply
 	req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/apply", nil)
 	req2.Header.Set("Authorization", "Bearer secret")
-	resp2, _ := http.DefaultClient.Do(req2)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer resp2.Body.Close()
 
 	if resp2.StatusCode != http.StatusAccepted {
@@ -178,7 +184,10 @@ func TestHandler_ApplyAccepted(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 		req3, _ := http.NewRequest(http.MethodGet, srv.URL+"/status", nil)
 		req3.Header.Set("Authorization", "Bearer secret")
-		resp3, _ := http.DefaultClient.Do(req3)
+		resp3, err := http.DefaultClient.Do(req3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		var st selfupdate.Status
 		json.NewDecoder(resp3.Body).Decode(&st)
 		resp3.Body.Close()
