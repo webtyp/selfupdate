@@ -2,6 +2,8 @@
 PLAN: "feat: apply a verified version — backup, pull, switch, health wait, rollback"
 EXECUTOR: jules
 REVIEWER: none
+STATUS: running
+SESSION: 5508372715093224670
 ---
 
 > Read AGENTS.md at the repo root before any change. Design: `docs/ARCHITECTURE.md`; the flow this plan builds is
