@@ -2,8 +2,10 @@
 PLAN: "feat: server layout, state file and the verified version check"
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 4449526814928660747
+PR: https://github.com/webtyp/selfupdate/pull/1
+REVIEWED_COMMIT: 0f57ba0c621013e5b8b3e81e10b6ec2d7af78423
 ---
 
 > Read AGENTS.md at the repo root before any change. The design is `docs/ARCHITECTURE.md`; the flow this plan builds
