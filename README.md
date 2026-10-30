@@ -1,4 +1,5 @@
 # selfupdate
+<img src="docs/img/badges.svg">
 
 `selfupdate` is the **supervisor** of a self-hosted webtyp app: a small container that runs next to the app in its Docker Compose and is the **only** one allowed to talk to Docker. It finds out whether a newer version was published, checks that the publisher really signed it, switches the app to the new container image and goes back to the previous one when the new image does not come up healthy.
 
