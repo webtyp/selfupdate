@@ -10,4 +10,8 @@ Example usage:
 m, ok, err := selfupdate.Checker{Releases: selfupdate.GitHub{Repo: "acme/shop", Token: token}, PublicKey: pub}.Check(state)
 
 next, err := selfupdate.Applier{Engine: selfupdate.Compose{Dir: dir}, Dir: dir}.Apply(state, m)
+
+// Serving the HTTP API
+s := selfupdate.NewSupervisor(checker, applier, dir+"/"+selfupdate.FileState)
+http.ListenAndServe(":8080", s.Handler("secret"))
 ```
