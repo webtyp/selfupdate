@@ -2,8 +2,10 @@
 PLAN: "feat: the supervisor's HTTP API — status, check and apply, behind a bearer token"
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 4194968978655066060
+PR: https://github.com/webtyp/selfupdate/pull/3
+REVIEWED_COMMIT: 07d22b9df60d779014be786d13e6c8ac726821de
 ---
 
 > Read AGENTS.md at the repo root before any change. Design: `docs/ARCHITECTURE.md` («Talking to the supervisor»).
