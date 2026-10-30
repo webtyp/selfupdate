@@ -2,8 +2,10 @@
 PLAN: "feat!: migrate the new version before switching (owner user), Command for docker runs"
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 8441968537191518885
+PR: https://github.com/webtyp/selfupdate/pull/4
+REVIEWED_COMMIT: 4ba082375598db6e00fd5d24325e1d6a6619cd6d
 ---
 
 > Read AGENTS.md at the repo root before any change. Design: `docs/ARCHITECTURE.md`; flow: `docs/diagrams/APPLY_FLOW.md`.
