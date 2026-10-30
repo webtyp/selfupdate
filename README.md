@@ -1,3 +1,10 @@
 # selfupdate
 
-Supervisor that updates a self-hosted webtyp app: verifies the signed manifest, switches the container image and rolls back when the new one is unhealthy
+`selfupdate` is the **supervisor** of a self-hosted webtyp app: a small container that runs next to the app in its Docker Compose and is the **only** one allowed to talk to Docker. It finds out whether a newer version was published, checks that the publisher really signed it, switches the app to the new container image and goes back to the previous one when the new image does not come up healthy.
+
+See [Architecture](docs/ARCHITECTURE.md), [Check flow](docs/diagrams/CHECK_FLOW.md), and [Apply flow](docs/diagrams/APPLY_FLOW.md).
+
+Example usage:
+```go
+m, ok, err := selfupdate.Checker{Releases: selfupdate.GitHub{Repo: "acme/shop", Token: token}, PublicKey: pub}.Check(state)
+```
