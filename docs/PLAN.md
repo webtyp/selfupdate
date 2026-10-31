@@ -2,8 +2,10 @@
 PLAN: "feat!: every version brings its signed compose.yaml — verified on check, installed on apply, restored on failure"
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 14039643631457085738
+PR: https://github.com/webtyp/selfupdate/pull/5
+REVIEWED_COMMIT: 86bd82efdfe79b6ca0a6532eb810b119f93921d9
 ---
 
 > Read AGENTS.md at the repo root before any change. Design: `docs/ARCHITECTURE.md`; flows: `docs/diagrams/`.
