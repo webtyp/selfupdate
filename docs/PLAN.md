@@ -3,6 +3,8 @@ PLAN: "feat: ComposeFile writes the compose.yaml of the contract, Server names t
 TAG: v0.0.8
 EXECUTOR: jules
 REVIEWER: none
+STATUS: running
+SESSION: 10833529541807292146
 ---
 
 > Read AGENTS.md at the repo root before any change.
