@@ -11,6 +11,8 @@ one when the new image does not come up healthy.
 app's «Updates» screen tells you a new version is waiting. Why every self-hosted app works this way:
 [SELFHOST_DOCKER_DESIGN.md](https://github.com/webtyp/docs/blob/main/SELFHOST_DOCKER_DESIGN.md).
 
+See [Install flow](diagrams/INSTALL_FLOW.md) and [Serve flow](diagrams/SERVE_FLOW.md).
+
 **Who decides what.** The **app** decides *when*: it knows whether someone is using it, so it never interrupts a person
 in the middle of their work. The **supervisor** decides *how*: it verifies, pulls, switches and rolls back. The app
 never touches Docker — access to the Docker socket equals root on the machine.
