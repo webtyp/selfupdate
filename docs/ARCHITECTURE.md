@@ -58,3 +58,74 @@ Dump the database → pull `image@digest` → **migrate (owner user, the new ima
 container, and the health probe checks the certificate against `APP_DOMAIN`. Healthy: the new version is current.
 Not healthy within the limit: write the previous `APP_IMAGE` back, recreate `app`, and mark the version as failed.
 The supervisor migrates; the app runs with the user that only reads and writes rows.
+
+## The compose file — contract
+
+`webtyp/deploy` generates it from the app's `config/deploy.go`, `gorelease` uploads it with every Release, and the
+supervisor installs it. Its digest is in the signed manifest, so a Release whose compose was altered is refused like an
+altered image. `<app>` is `deploy.Plan.Name`, `<domain>` is `deploy.Plan.Domain`; every other name comes from
+`layout.go`. Secrets are files (`secrets/`, mode 0600) handed to containers as `/run/secrets/<name>`; programs read them
+with the `<KEY>_FILE` convention (`webtyp/env`, lego, cloudflared).
+
+```yaml
+name: <app>
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: <app>
+      POSTGRES_USER: <app>_owner
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_owner_password
+    secrets: [db_owner_password]
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./secrets/initdb.sql:/docker-entrypoint-initdb.d/10-app-user.sql:ro   # creates <app>_app: rows only
+  migrate:                       # run only by the supervisor, with the new image (D23)
+    image: ${APP_IMAGE}
+    profiles: [migrate]
+    entrypoint: ["/app/migrate"]
+    environment: { DATABASE_URL_FILE: /run/secrets/database_owner_url }
+    secrets: [database_owner_url]
+    depends_on: [db]
+  app:
+    image: ${APP_IMAGE}
+    restart: unless-stopped
+    depends_on: [db]
+    environment:
+      PORT: "8443"
+      INTERNET_PORT: "8444"
+      APP_DOMAIN: <domain>
+      DATABASE_URL_FILE: /run/secrets/database_url
+      CLOUDFLARE_DNS_API_TOKEN_FILE: /run/secrets/dns_token
+    secrets: [database_url, dns_token]
+    ports: ["${LAN_ADDRESS}:443:8443"]          # the office door; LAN_ADDRESS in .env (127.0.0.1 on a dev PC)
+    volumes: [certs:/app/certs]                 # the Let's Encrypt certificate survives every update
+  cloudflared:
+    image: cloudflare/cloudflared:<pinned>
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment: { TUNNEL_TOKEN_FILE: /run/secrets/tunnel_token }
+    secrets: [tunnel_token]
+  selfupdate:
+    image: ghcr.io/webtyp/selfupdate:<pinned>
+    restart: unless-stopped
+    command: ["serve", "<owner/repo>", "<app>"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/<app>:/opt/<app>
+secrets:
+  db_owner_password:  { file: ./secrets/db_owner_password }
+  database_url:       { file: ./secrets/database_url }        # postgres://<app>_app:…@db:5432/<app>
+  database_owner_url: { file: ./secrets/database_owner_url }  # postgres://<app>_owner:…@db:5432/<app>
+  dns_token:          { file: ./secrets/dns_token }
+  tunnel_token:       { file: ./secrets/tunnel_token }
+volumes:
+  db_data: {}
+  certs: {}
+```
+
+The internet door (8444) is published nowhere: only `cloudflared`, on the Compose network, reaches `app:8444`.
+
+**The app image** (built by `gorelease`): `/app/server` (entrypoint), `/app/migrate`, `/app/web/public`, working
+directory `/app` (so `web/public` and `certs/` resolve there), a non-root user, `linux/amd64`.
