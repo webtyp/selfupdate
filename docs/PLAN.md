@@ -3,6 +3,8 @@ PLAN: "feat: install provisions /opt/<app> with secret owners/modes, serve runs 
 TAG: v0.0.9
 EXECUTOR: jules
 REVIEWER: none
+STATUS: running
+SESSION: 16634566308605645944
 ---
 
 > Read AGENTS.md at the repo root before any change.
