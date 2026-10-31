@@ -1,89 +1,156 @@
-# selfupdate — architecture
+# selfupdate — Architecture
 
-## What this is
+## 1. Overview in One Minute
 
-`selfupdate` is the **supervisor** of a self-hosted webtyp app: a small container that runs next to the app in its
-Docker Compose and is the **only** one allowed to talk to Docker. It finds out whether a newer version was published,
-checks that the publisher really signed it, switches the app to the new container image and goes back to the previous
-one when the new image does not come up healthy.
+`selfupdate` is the **supervisor** of a self-hosted [WebTyp](https://github.com/webtyp) application: a companion container that runs next to the application inside [Docker Compose](https://docs.docker.com/compose/) and is the **only** container allowed to talk to the Docker daemon (`/var/run/docker.sock`).
 
-**When you run into it:** you install a webtyp app on a server you own (one command, `selfupdate install`), or the
-app's «Updates» screen tells you a new version is waiting. Why every self-hosted app works this way:
-[SELFHOST_DOCKER_DESIGN.md](https://github.com/webtyp/docs/blob/main/SELFHOST_DOCKER_DESIGN.md).
+You encounter `selfupdate` in two places:
+1. **When provisioning a server for the first time (`selfupdate install <owner/repo>`):** One command verifies the latest signed GitHub Release, generates isolated database credentials, creates `/opt/<app>`, runs database migrations, and starts the stack.
+2. **While the application is running (`selfupdate serve <owner/repo> <app>`):** The supervisor container checks whether a newer signed version was published on GitHub, pulls the new container image by its `@sha256` digest, runs database migrations, switches the `app` container, and automatically rolls back to the previous image if the new one does not answer `HTTPS /health` in time.
 
-See [Install flow](diagrams/INSTALL_FLOW.md) and [Serve flow](diagrams/SERVE_FLOW.md).
+**Who decides what:**
+- **The application decides *when* to update:** Because the web application tracks active user sessions, it knows when no one is in the middle of their work (or waits for the maintenance window). It drives the supervisor over an internal HTTP API (`GET /status`, `POST /check`, `POST /apply`).
+- **The supervisor decides *how* to update:** It holds the publisher's public key (`update.pub`), talks to GitHub, writes `/opt/<app>/backups/`, runs migrations as the database owner, and recreates the `app` service. The application itself never touches `/var/run/docker.sock`—because access to the Docker socket is equivalent to `root` on the host machine.
 
-**Who decides what.** The **app** decides *when*: it knows whether someone is using it, so it never interrupts a person
-in the middle of their work. The **supervisor** decides *how*: it verifies, pulls, switches and rolls back. The app
-never touches Docker — access to the Docker socket equals root on the machine.
+For the ecosystem-wide design rationale behind self-hosted deployments, see [SELFHOST_DOCKER_DESIGN.md](https://github.com/webtyp/docs/blob/main/SELFHOST_DOCKER_DESIGN.md).
 
-## The server, on disk
+---
 
-Everything of one app lives in `/opt/<app>/`, readable only by root (`<app>` is `App.Name`):
+## 2. Repository Pieces & On-Disk Layout
 
-| Path | What it is | Written by |
+### 2.1 Files in This Repository
+
+| File | Single Responsibility | Related Diagram |
 |---|---|---|
-| `compose.yaml` | The services below; `app` uses `image: ${APP_IMAGE}` | the Release (written by `ComposeFile`, uploaded by `gorelease`), copied at install and at each update |
-| `.env` | `APP_IMAGE=<image>@sha256:<digest>`, `SUPERVISOR_IMAGE`, `LAN_ADDRESS` — no secrets | install; `APP_IMAGE` by the supervisor on every switch |
-| `update.pub` | The publisher's public key: the only thing that decides which versions are genuine | install (the operator pastes it; it is not secret) |
-| `secrets/` | One file per secret, mode 0600: database passwords, tunnel token, DNS token, GitHub read token, supervisor token | install; generated on the server or typed once, never shown again |
-| `state.json` | The running version, the previous one and the versions that failed (never retried) | the supervisor |
-| `backups/` | A database dump taken before every switch (the last 7 are kept) | the supervisor |
+| `target.go` | Declares `selfupdate.Server` (`deploy.TargetID`) used in an app's `config/deploy.go`. | — |
+| `layout.go` | Defines the canonical directory paths (`/opt/<app>`), file names, service names, ports, UIDs, and environment keys shared with [`webtyp/deploy`](https://github.com/webtyp/deploy) and [`webtyp/gorelease`](https://github.com/webtyp/gorelease). | — |
+| `composefile.go` | Validates `App{Name, Domain, Repo}` and renders the canonical `compose.yaml` template. | [diagrams/COMPOSE_FILE.md](diagrams/COMPOSE_FILE.md) |
+| `github.go` | Implements the `Releases` interface over the GitHub REST API (`Latest()` and `Download()`). | [diagrams/CHECK_FLOW.md](diagrams/CHECK_FLOW.md) |
+| `check.go` | Implements `Checker.Check(State)`: verifies that a release is newer, not marked failed, validly signed with `update.pub`, and matches the `compose.yaml` digest. | [diagrams/CHECK_FLOW.md](diagrams/CHECK_FLOW.md) |
+| `compose.go` | Implements the `Engine` interface (`Backup`, `Pull`, `Migrate`, `Switch`, `Healthy`) over the `docker` and `docker compose` CLI and an internal HTTPS `/health` probe. | [diagrams/APPLY_FLOW.md](diagrams/APPLY_FLOW.md) |
+| `apply.go` | Implements `Applier.Apply(State, Update)`: orchestrates backup, pull, compose replacement, migration, container switch, health polling, backup pruning, and automatic rollback. | [diagrams/APPLY_FLOW.md](diagrams/APPLY_FLOW.md) |
+| `state.go` | Atomic JSON persistence (`LoadState`, `State.Save`, `State.HasFailed`) for `/opt/<app>/state.json`. | — |
+| `supervisor.go` | Thread-safe state machine (`Supervisor`) and bearer-authenticated HTTP handler (`GET /status`, `POST /check`, `POST /apply`, and `Backup`). | [diagrams/PHASES.md](diagrams/PHASES.md) |
+| `install.go` | Implements `Install(InstallConfig)`, `DecodePublicKey`, `ParseComposeApp`, and `InitDBSQL` for first-time server provisioning. | [diagrams/INSTALL_FLOW.md](diagrams/INSTALL_FLOW.md) |
+| `serve.go` | Implements `OpenSupervisor` and `RunBackupLoop` for the long-running supervisor container. | [diagrams/SERVE_FLOW.md](diagrams/SERVE_FLOW.md) |
+| `cmd/selfupdate/main.go` | CLI entry point dispatching `selfupdate install <owner/repo>` and `selfupdate serve <owner/repo> <app>`. | [diagrams/INSTALL_FLOW.md](diagrams/INSTALL_FLOW.md), [diagrams/SERVE_FLOW.md](diagrams/SERVE_FLOW.md) |
 
-## The services
+### 2.2 Server Directory Layout (`/opt/<app>/`)
 
-`db` (PostgreSQL, data in a named volume, no host port, a health check that `migrate` and `app` wait for) · `migrate` (run only by the supervisor) · `app` · `cloudflared` (the tunnel, pinned in `TunnelImage`) · `selfupdate` (this supervisor, `SUPERVISOR_IMAGE` from `.env`: the image install ran; an app update never changes it; mounts `/var/run/docker.sock` and `/opt/<app>` at the same path, so the relative paths of the compose resolve the same inside and outside).
+Everything belonging to one application lives under `/opt/<app>/` (where `<app>` is `App.Name`), with directory mode `0700` owned by `root`:
 
-## Talking to the supervisor — [diagram](diagrams/PHASES.md)
+| Path in `/opt/<app>/` | What it holds | Written by |
+|---|---|---|
+| `compose.yaml` | The 5 Docker Compose services; `app` and `migrate` reference `image: ${APP_IMAGE}`. | Generated by `ComposeFile` during `gorelease`, verified and written at `install` and on every `Apply`. |
+| `.env` | `APP_IMAGE=<image>@sha256:<digest>`, `APP_DOMAIN`, `SUPERVISOR_IMAGE`, `LAN_ADDRESS` (contains zero secrets). | Created by `install`; `APP_IMAGE` is updated atomically by the supervisor on every switch. |
+| `update.pub` | Raw DER bytes of the publisher's P-256 public key. | Decoded and written atomically by `install`. |
+| `secrets/` | One file per secret (mode `0400`), owned by the exact container UID that reads it. | Created by `install`; random passwords (`db_owner_password`, `db_app_password`, `supervisor_token`) are preserved across re-runs. |
+| `state.json` | JSON record of `version`, `image`, `previous_version`, `previous_image`, and `failed` versions (mode `0600`). | Written atomically by `install` and `Applier.Apply`. |
+| `backups/` | Timestamped PostgreSQL SQL dumps (`YYYYMMDD-HHMMSS_<version>.sql`); the newest 7 dumps are kept. | Written by `Applier.Apply` before every switch and by `Supervisor.Backup` every 24 hours. |
 
-Only the app talks to it, over the Compose internal network, with `Authorization: Bearer <secrets/supervisor_token>`:
+### 2.3 Docker Compose Services
 
-| Request | Answer |
+The canonical `compose.yaml` (see golden output in [tests/testdata/compose.golden.yaml](../tests/testdata/compose.golden.yaml)) defines 5 services:
+
+| Service | Container Image | Network & Ports | Purpose |
+|---|---|---|---|
+| `db` | `postgres:17` (`DBImage`) | Internal network only (no host port); health check via `pg_isready` | Stores application data in the `db_data` volume; runs `secrets/initdb.sql` on first boot to create `<db>_app`. |
+| `migrate` | `${APP_IMAGE}` (profile `migrate`) | Internal network; waits for `db` healthy | One-off service (`entrypoint: ["/app/migrate"]`) invoked only by the supervisor using `database_owner_url`. |
+| `app` | `${APP_IMAGE}` | Publishes `${LAN_ADDRESS}:443:8443` (office door); exposes `8444` internally (internet door) | Runs `/app/server` with the rows-only `database_url` secret and stores TLS certificates in the `certs` volume. |
+| `cloudflared` | `cloudflare/cloudflared:2026.9.3` (`TunnelImage`) | Internal network; reaches `https://app:8444` | Connects outbound to Cloudflare using `tunnel_token` with `--no-autoupdate`. |
+| `selfupdate` | `${SUPERVISOR_IMAGE}` | Internal network (`http://selfupdate:8080`); mounts `/var/run/docker.sock` and `/opt/<app>:/opt/<app>` | Runs `selfupdate serve <owner/repo> <app>`. Mounting `/opt/<app>` at the identical path inside the container ensures relative secret and volume paths in `compose.yaml` resolve identically on the host daemon. |
+
+---
+
+## 3. Step-by-Step Flows
+
+### 3.1 Generating the Compose File — [diagram](diagrams/COMPOSE_FILE.md)
+
+During release publication, [`webtyp/gorelease`](https://github.com/webtyp/gorelease) calls `selfupdate.ComposeFile(App{Name, Domain, Repo})` using the values declared in the application's `config/deploy.go`. `ComposeFile` validates that:
+1. `Name` starts with a lowercase ASCII letter and contains only lowercase letters, digits, and dashes (`ErrAppName` otherwise).
+2. `Domain` has at least two dot-separated labels of lowercase letters, digits, and interior dashes (`ErrAppDomain` otherwise).
+3. `Repo` has the form `<owner>/<repo>` (`ErrAppRepo` otherwise).
+
+Because PostgreSQL unquoted identifiers cannot contain dashes, `ComposeFile` derives the database name `<db>` by replacing `-` with `_` in `App.Name`. The resulting `compose.yaml` is uploaded as a Release asset and its SHA-256 digest is embedded inside the signed `manifest.txt`.
+
+### 3.2 First-Time Server Installation — [diagram](diagrams/INSTALL_FLOW.md)
+
+When an operator runs `selfupdate install <owner/repo>` (or calls `selfupdate.Install(cfg)`):
+1. **Input validation:** Validates `Repo` (`ErrAppRepo`), decodes `PublicKey` (`ErrPublicKey`), and checks that `GitHubToken` (`ErrNoGitHubToken`), `TunnelToken` (`ErrNoTunnelToken`), and `DNSToken` (`ErrNoDNSToken`) are non-empty.
+2. **Release verification:** Calls `Checker.Check(State{})` against GitHub. If no verified release exists, returns `ErrNoRelease`. Extracts `appName` and `domain` from the verified `compose.yaml` via `ParseComposeApp`.
+3. **Directory & secret provisioning:** Creates `/opt/<app>`, `/opt/<app>/secrets`, and `/opt/<app>/backups` (mode `0700`). Generates 32-byte random hex secrets for `db_owner_password`, `db_app_password`, and `supervisor_token` (or reuses existing files so re-running `install` never breaks an existing database volume). Writes all 9 files in `secrets/` with mode `0400` and their exact container UIDs (`0`, `999`, or `65532`), plus `update.pub`, `compose.yaml`, and `.env`.
+4. **Stack bring-up & health check:** Runs `Engine.Pull(ref)`, starts PostgreSQL (`docker compose up -d db`), runs schema migrations (`Engine.Migrate(ref)`), starts all services (`docker compose up -d`), and polls `Engine.Healthy()`. Once healthy, writes `/opt/<app>/state.json` and prints the installed version.
+
+### 3.3 Booting the Supervisor Daemon — [diagram](diagrams/SERVE_FLOW.md)
+
+Inside the `selfupdate` container, `selfupdate serve <owner/repo> <app>` calls `OpenSupervisor("/opt/<app>", repo, nil, nil)`:
+1. Validates `repo` (`ErrAppRepo`).
+2. Reads and decodes `/opt/<app>/update.pub` (`ErrPublicKey`).
+3. Reads `/opt/<app>/secrets/github_token` (`ErrNoGitHubToken`) and `/opt/<app>/secrets/supervisor_token` (`ErrNoSupervisorToken`).
+4. Starts `RunBackupLoop` in a background goroutine (calling `Supervisor.Backup()` every `24h`) and serves `Supervisor.Handler(token)` on `:8080`.
+
+### 3.4 Supervisor Phases & HTTP Protocol — [diagram](diagrams/PHASES.md)
+
+Only the `app` container communicates with `http://selfupdate:8080`, authenticating every request with `Authorization: Bearer <supervisor_token>` (compared in constant time via `crypto/subtle.ConstantTimeCompare`).
+
+| Endpoint | Behavior & Phase Transitions |
 |---|---|
-| `GET /status` | running version, available version (if any), phase (`idle`, `checking`, `available`, `applying`, `rolled_back`), last message (200, 401 without the token, 405, 404) |
-| `POST /check` | looks for a newer verified version; answers the new status (200, 409 busy, 502 when the check fails) |
-| `POST /apply` | starts switching to the available version; answers at once, progress is read with `GET /status` (202 for apply, 409 busy or nothing to apply) |
+| `GET /status` | Reads `state.json` and returns `Status{Version, Available, Phase, Message}` (`200 OK`). |
+| `POST /check` | Moves phase from `idle` (or `rolled_back`) to `checking`. If a newer verified release is found, stores it in memory and enters `available` (`200 OK`). If nothing is newer, returns to `idle` (`200 OK`). If verification or GitHub fails, records the error in `Message`, returns to `idle`, and responds `502 Bad Gateway`. If already busy, responds `409 Conflict`. |
+| `POST /apply` | Requires phase `available` (`409 Conflict` otherwise). Transitions immediately to `applying`, launches `Supervisor.Apply()` in a background goroutine, and responds `202 Accepted`. When `Apply()` finishes, phase becomes `idle` (on success or pre-switch error) or `rolled_back` (when the new image failed its health check and the previous version was restored). |
 
-## Checking for a version — [diagram](diagrams/CHECK_FLOW.md)
+### 3.5 Checking for a New Version — [diagram](diagrams/CHECK_FLOW.md)
 
-The latest GitHub Release of the app's repository (read with the GitHub read token) must be newer than the running
-version, must not be marked as failed, and must carry `manifest.txt` and `manifest.sig` (`webtyp.com/update`). The
-signature is verified with `update.pub` **before** the manifest is read, and the manifest must name the same version
-as the Release tag — a manifest signed for another version is refused. The compose file is also verified against the signed digest.
+`Checker.Check(state)` enforces five gates before accepting a release:
+1. **Newer version check:** Fetches the latest GitHub Release via `Releases.Latest()`. If `state.Version` is already equal to or newer than `Release.Tag` (checked via `update.IsOutdated`), returns `ok = false, err = nil`.
+2. **Failed-version blocklist:** If `state.HasFailed(Release.Tag)` is true, skips the version (`ok = false, err = nil`) so a broken release is never retried in a loop.
+3. **Signature verification first:** Downloads `manifest.txt` and `manifest.sig` (`ErrNoAsset` if either is missing) and verifies the ECDSA P-256 signature with `update.VerifyManifest(text, sig, PublicKey)` **before** trusting any field inside the manifest.
+4. **Tag-to-manifest binding:** Confirms `Manifest.Version == Release.Tag` (`ErrVersionMismatch` otherwise), preventing an attacker from re-uploading an old signed manifest under a new release tag.
+5. **Compose digest verification:** Downloads `compose.yaml` from the release and verifies its SHA-256 digest against the signed manifest via `Manifest.CheckCompose(compose)`.
 
-## Switching — [diagram](diagrams/APPLY_FLOW.md)
+### 3.6 Applying an Update & Automatic Rollback — [diagram](diagrams/APPLY_FLOW.md)
 
-Dump the database → pull `image@digest` → install the verified `compose.yaml` (keeping the old one as `.prev`) → **migrate (owner user, the new image's `migrate` service)** → write `APP_IMAGE` in `.env` → recreate only the `app` service → wait for
-`/health`. The app listens on `AppPort` (8443, office door) and `AppInternetPort` (8444, internet door) inside its
-container, and the health probe checks the certificate against `APP_DOMAIN`. Healthy: the new version is current.
-Not healthy within the limit: put the previous `compose.yaml` back, write the previous `APP_IMAGE` back, recreate `app`, and mark the version as failed.
-The supervisor migrates; the app runs with the user that only reads and writes rows.
+`Applier.Apply(state, update)` updates the stack without risking data loss or prolonged downtime:
+1. **Pre-switch database backup:** Runs `pg_dump` inside the `db` container into `/opt/<app>/backups/<timestamp>_<running_version>.sql` and prunes old backups beyond the newest 7 (`Keep`). If the dump fails, `Apply` aborts immediately before touching any container.
+2. **Pull by digest:** Pulls `image@sha256:<digest>` (`Engine.Pull`). If the pull fails, `Apply` aborts with the current app untouched.
+3. **Stage new `compose.yaml` & run migration:** Saves the current `compose.yaml` as `compose.yaml.prev`, writes the new verified `compose.yaml`, and runs `docker compose run --rm --no-deps migrate` with `APP_IMAGE` set to the new image (`Engine.Migrate`).
+   - *If migration fails:* Restores `compose.yaml` from `compose.yaml.prev`, appends the new version to `state.Failed`, saves `state.json`, and returns `ErrMigrate`. The running `app` container was never stopped.
+4. **Switch `app` container & poll health:** Writes `APP_IMAGE=<new_ref>` to `/opt/<app>/.env`, runs `docker compose up -d --no-deps app`, and polls `Engine.Healthy()` every 3 seconds (`Every`) for up to 120 seconds (`Wait`).
+   - *If healthy:* Updates `state.json` with the new `Version` and `Image` (moving the old ones to `PreviousVersion` and `PreviousImage`) and returns.
+   - *If unhealthy:* Restores `compose.yaml` from `compose.yaml.prev`, writes `PreviousImage` back to `.env`, recreates the `app` service, records the broken version in `state.Failed`, saves `state.json`, and returns `ErrUnhealthy` (moving the supervisor phase to `rolled_back`).
 
-## Daily backup
+### 3.7 Daily Database Backups
 
-`Supervisor.Backup()` writes the same dump as the copy before a switch, into `backups/` with the running version in its name, and keeps the newest 7 of both kinds together. While it runs the phase is `backing_up` and a check or an apply answers busy. The `serve` command calls it once a day.
+Every 24 hours (`BackupInterval`), `RunBackupLoop` invokes `Supervisor.Backup()`. While the dump runs, the supervisor enters phase `backing_up` (any concurrent `Check` or `Apply` receives `ErrBusy` / `409 Conflict`). Once the dump and pruning complete, the supervisor returns to the exact phase it held before (`idle` or `available`).
 
-## The compose file — contract
+---
 
-`selfupdate.ComposeFile(selfupdate.App{Name, Domain, Repo})` writes it ([diagram](diagrams/COMPOSE_FILE.md)); `gorelease` calls it with `Name` and `Domain` from the app's `config/deploy.go`, and the supervisor installs it. Its digest is in the signed manifest, so a Release whose compose was altered is refused like an altered image. `<app>` is `App.Name` (`<db>` is the same name with `-` as `_`, because Postgres names have no dashes), `<domain>` is `App.Domain`; every other name comes from `layout.go`. Secrets are files (`secrets/`, mode 0600) handed to containers as `/run/secrets/<name>`; programs read them with the `<KEY>_FILE` convention (`webtyp/env`, lego, cloudflared).
+## 4. Security Boundaries & Contracts
 
-The exact file, for an app called `acme-shop`: [tests/testdata/compose.golden.yaml](../tests/testdata/compose.golden.yaml).
+### 4.1 Why Only `selfupdate` Mounts `/var/run/docker.sock`
 
-The internet door (8444) is published nowhere: only `cloudflared`, on the Compose network, reaches `app:8444`.
+Mounting `/var/run/docker.sock` inside a container grants root-equivalent control over the host. In this architecture, the public-facing `app` container runs as unprivileged user `65532` (`NonRootUID`) with no Docker socket and no access to `/opt/<app>/secrets/github_token` or `database_owner_url`. Even if a vulnerability were found in the web application, the attacker can only call the three fixed endpoints of `http://selfupdate:8080`, which only install releases cryptographically signed by `update.pub`.
 
-### Who reads each secret file
+### 4.2 Least-Privilege Database Separation (`<db>_owner` vs. `<db>_app`)
 
-| File in `secrets/` | Read by | Owner, mode |
-|---|---|---|
-| `db_owner_password` | `db` entrypoint (as root) | root, 0400 |
-| `initdb.sql` | `db` init scripts (as `postgres`, uid 999 = `PostgresUID`) | 999, 0400 |
-| `database_url`, `database_owner_url`, `dns_token`, `supervisor_token` | `app` and `migrate` (uid 65532 = `NonRootUID`) | 65532, 0400 |
-| `tunnel_token` | `cloudflared` (uid 65532) | 65532, 0400 |
-| `github_token` | the supervisor (root), never mounted in another container | root, 0400 |
+On PostgreSQL's first boot, `/docker-entrypoint-initdb.d/10-app-user.sql` (mounted from `secrets/initdb.sql`, generated by `InitDBSQL`) creates a restricted role `<db>_app` that only has `SELECT, INSERT, UPDATE, DELETE` on tables and `USAGE, SELECT` on sequences.
+- Schema changes (`CREATE TABLE`, `ALTER TABLE`) are executed exclusively by the one-off `migrate` container using `secrets/database_owner_url` (`<db>_owner`).
+- The long-running `app` container receives only `secrets/database_url` (`<db>_app`) and cannot drop tables or alter schemas.
 
-Docker Compose (outside Swarm) mounts a secret file with its owner and mode on the host, so `install` sets them; a file the container's user cannot read stops that container at start.
+### 4.3 Secret File Ownership Contract
 
-**The app image** (built by `gorelease`): `/app/server` (entrypoint), `/app/migrate`, `/app/web/public`, working
-directory `/app` (so `web/public` and `certs/` resolve there), a non-root user, `linux/amd64`.
+Standalone Docker Compose mounts host secret files into `/run/secrets/<name>` preserving their host UID and mode. Therefore, `selfupdate install` writes every secret file with mode `0400` (read-only by owner) and `chown`s it to the exact UID of the container process that reads it:
 
-The deploy target: an app's `config/deploy.go` declares `Target: selfupdate.Server`.
+| File in `/opt/<app>/secrets/` | Read by Container | Host & Container UID | Mode |
+|---|---|---|---|
+| `db_owner_password`, `db_app_password` | `db` entrypoint (starts as `root`) / `install` | `0` (`root`) | `0400` |
+| `initdb.sql` | `db` init script (runs as `postgres`) | `999` (`PostgresUID`) | `0400` |
+| `database_url`, `database_owner_url`, `dns_token`, `supervisor_token` | `app` and `migrate` | `65532` (`NonRootUID`) | `0400` |
+| `tunnel_token` | `cloudflared` | `65532` (`NonRootUID`) | `0400` |
+| `github_token` | `selfupdate` supervisor (runs as `root`, never mounted in other containers) | `0` (`root`) | `0400` |
+
+### 4.4 Two Network Doors & TLS Verification
+
+The `app` container listens on two ports inside the Compose network:
+- **Office door (`8443`, published on host `${LAN_ADDRESS}:443`):** Used by local LAN devices and by `Compose.Healthy()`, which connects to `https://app:8443/health` and verifies that the server's TLS certificate is valid for `APP_DOMAIN` (`tls.Config{ServerName: domain}`).
+- **Internet door (`8444`, never published on the host):** Reached exclusively by the `cloudflared` container over the internal Docker network.
