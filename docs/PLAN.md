@@ -2,6 +2,8 @@
 PLAN: "feat!: every version brings its signed compose.yaml — verified on check, installed on apply, restored on failure"
 EXECUTOR: jules
 REVIEWER: none
+STATUS: running
+SESSION: 14039643631457085738
 ---
 
 > Read AGENTS.md at the repo root before any change. Design: `docs/ARCHITECTURE.md`; flows: `docs/diagrams/`.
