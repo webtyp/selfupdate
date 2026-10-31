@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 )
@@ -18,6 +19,8 @@ const (
 	PhaseAvailable  Phase = "available"
 	PhaseApplying   Phase = "applying"
 	PhaseRolledBack Phase = "rolled_back"
+	// PhaseBackingUp: the daily database copy is running; checks and applies wait.
+	PhaseBackingUp  Phase = "backing_up"
 )
 
 var (
@@ -105,7 +108,7 @@ func (s *Supervisor) Check() error {
 // Apply switches to the waiting version (blocking; the HTTP handler runs it in the background).
 func (s *Supervisor) Apply() error {
 	s.mu.Lock()
-	if s.phase == PhaseChecking || s.phase == PhaseApplying {
+	if s.busy() {
 		s.mu.Unlock()
 		return ErrBusy
 	}
@@ -135,10 +138,36 @@ func (s *Supervisor) Apply() error {
 	return err
 }
 
+// Backup takes the daily copy of the database into backups/ (the same files and
+// limit as the copy before every switch) and returns to the phase it had.
+// Example: for range time.Tick(24 * time.Hour) { s.Backup() }
+func (s *Supervisor) Backup() error {
+	s.mu.Lock()
+	if s.busy() {
+		s.mu.Unlock()
+		return ErrBusy
+	}
+	before := s.phase
+	s.phase = PhaseBackingUp
+	s.mu.Unlock()
+
+	state, err := LoadState(s.statePath)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		err = s.applier.backup(state.Version)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.phase = before
+	if err != nil {
+		s.message = err.Error()
+	}
+	return err
+}
+
 // begin moves to a busy phase unless one is running, and reads the state.
 func (s *Supervisor) begin(p Phase) (State, error) {
 	s.mu.Lock()
-	if s.phase == PhaseChecking || s.phase == PhaseApplying {
+	if s.busy() {
 		s.mu.Unlock()
 		return State{}, ErrBusy
 	}
@@ -152,6 +181,11 @@ func (s *Supervisor) begin(p Phase) (State, error) {
 		s.mu.Unlock()
 	}
 	return state, err
+}
+
+// busy reports whether a check, an apply or a backup is running; call it with s.mu held.
+func (s *Supervisor) busy() bool {
+	return s.phase == PhaseChecking || s.phase == PhaseApplying || s.phase == PhaseBackingUp
 }
 
 // Handler serves GET /status, POST /check and POST /apply to whoever presents

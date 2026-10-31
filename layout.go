@@ -36,6 +36,35 @@ const (
 	SecretDNSToken        = "dns_token"
 	SecretDBOwner         = "db_owner_password"
 	SecretDBApp           = "db_app_password"
+
+	// DBImage and TunnelImage are pinned: a new version of either is a change to this file.
+	DBImage     = "postgres:17"
+	TunnelImage = "cloudflare/cloudflared:2026.9.3"
+
+	// EnvSupervisorImage is the .env key with the supervisor's image, written by install;
+	// an app update never changes it.
+	EnvSupervisorImage = "SUPERVISOR_IMAGE"
+	// EnvLANAddress is the .env key with the host address the office door is published on (127.0.0.1 on a dev PC).
+	EnvLANAddress = "LAN_ADDRESS"
+
+	// Environment of the app container (the app reads secrets as <KEY>_FILE with webtyp/env).
+	EnvPort            = "PORT"
+	EnvInternetPort    = "INTERNET_PORT"
+	EnvDatabaseURL     = "DATABASE_URL"
+	EnvDNSToken        = "CLOUDFLARE_DNS_API_TOKEN"
+	EnvSupervisorURL   = "SUPERVISOR_URL"
+	EnvSupervisorToken = "SUPERVISOR_TOKEN"
+	EnvTunnelToken     = "TUNNEL_TOKEN"
+
+	SecretDatabaseURL      = "database_url"       // postgres://<db>_app:…@db:5432/<db>
+	SecretDatabaseOwnerURL = "database_owner_url" // postgres://<db>_owner:…@db:5432/<db>
+	// FileInitDB is in secrets/: the SQL that creates the rows-only user on the database's first start.
+	FileInitDB = "initdb.sql"
+
+	// NonRootUID is the user of the app and cloudflared images: the secret files they read belong to it.
+	NonRootUID = 65532
+	// PostgresUID is the postgres user of DBImage: it reads FileInitDB.
+	PostgresUID = 999
 )
 
 // AppDir is the folder of one app on the server.

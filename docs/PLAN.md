@@ -3,8 +3,10 @@ PLAN: "feat: ComposeFile writes the compose.yaml of the contract, Server names t
 TAG: v0.0.8
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 10833529541807292146
+PR: https://github.com/webtyp/selfupdate/pull/6
+REVIEWED_COMMIT: f935ffe4d0175a502642b8b4308bb7a6b9ea0509
 ---
 
 > Read AGENTS.md at the repo root before any change.

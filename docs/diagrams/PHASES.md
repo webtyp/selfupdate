@@ -13,4 +13,8 @@ flowchart TD
     R -->|POST /check| C
     C -.->|POST /check or /apply while busy: 409| C
     I -.->|POST /apply with nothing available: 409| I
+    I -->|Backup, daily| B[backing_up]
+    A -->|Backup, daily| B
+    B -->|done or failed with message: back to the phase it had| I
+    B -.->|Check, Apply or Backup while backing up: ErrBusy| B
 ```
