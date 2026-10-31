@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	webtyp.com/crypto v0.0.30
-	webtyp.com/update v0.0.5
+	webtyp.com/update v0.0.6
 )
 
 require (

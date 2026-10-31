@@ -49,14 +49,14 @@ Only the app talks to it, over the Compose internal network, with `Authorization
 The latest GitHub Release of the app's repository (read with the GitHub read token) must be newer than the running
 version, must not be marked as failed, and must carry `manifest.txt` and `manifest.sig` (`webtyp.com/update`). The
 signature is verified with `update.pub` **before** the manifest is read, and the manifest must name the same version
-as the Release tag — a manifest signed for another version is refused.
+as the Release tag — a manifest signed for another version is refused. The compose file is also verified against the signed digest.
 
 ## Switching — [diagram](diagrams/APPLY_FLOW.md)
 
-Dump the database → pull `image@digest` → **migrate (owner user, the new image's `migrate` service)** → write `APP_IMAGE` in `.env` → recreate only the `app` service → wait for
+Dump the database → pull `image@digest` → install the verified `compose.yaml` (keeping the old one as `.prev`) → **migrate (owner user, the new image's `migrate` service)** → write `APP_IMAGE` in `.env` → recreate only the `app` service → wait for
 `/health`. The app listens on `AppPort` (8443, office door) and `AppInternetPort` (8444, internet door) inside its
 container, and the health probe checks the certificate against `APP_DOMAIN`. Healthy: the new version is current.
-Not healthy within the limit: write the previous `APP_IMAGE` back, recreate `app`, and mark the version as failed.
+Not healthy within the limit: put the previous `compose.yaml` back, write the previous `APP_IMAGE` back, recreate `app`, and mark the version as failed.
 The supervisor migrates; the app runs with the user that only reads and writes rows.
 
 ## The compose file — contract

@@ -2,6 +2,7 @@ package tests
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"webtyp.com/crypto/asym"
@@ -10,8 +11,9 @@ import (
 )
 
 var (
-	testImage  = "ghcr.io/acme/shop"
-	testDigest = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	testImage   = "ghcr.io/acme/shop"
+	testDigest  = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	testCompose = []byte("name: shop\n")
 )
 
 type fakeReleases struct {
@@ -40,7 +42,7 @@ func (f fakeReleases) Download(a selfupdate.Asset) ([]byte, error) {
 
 func TestCheck_Available(t *testing.T) {
 	pub, priv, _ := asym.GenerateKeyPair()
-	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest}
+	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest, ComposeDigest: update.Digest(testCompose)}
 	text, sig, _ := update.SignManifest(m, priv)
 
 	rel := fakeReleases{
@@ -48,6 +50,7 @@ func TestCheck_Available(t *testing.T) {
 		assets: map[string][]byte{
 			update.ManifestAsset:  text,
 			update.SignatureAsset: sig,
+			update.ComposeAsset:   testCompose,
 		},
 	}
 
@@ -61,17 +64,20 @@ func TestCheck_Available(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
-	if out.Version != "v1.2.0" {
-		t.Errorf("expected version v1.2.0, got %q", out.Version)
+	if out.Manifest.Version != "v1.2.0" {
+		t.Errorf("expected version v1.2.0, got %q", out.Manifest.Version)
 	}
-	if out.Reference() != testImage+"@"+testDigest {
-		t.Errorf("expected reference %q, got %q", testImage+"@"+testDigest, out.Reference())
+	if out.Manifest.Reference() != testImage+"@"+testDigest {
+		t.Errorf("expected reference %q, got %q", testImage+"@"+testDigest, out.Manifest.Reference())
+	}
+	if string(out.Compose) != "name: shop\n" {
+		t.Errorf("expected compose data %q, got %q", "name: shop\n", string(out.Compose))
 	}
 }
 
-func TestCheck_FirstInstall(t *testing.T) {
+func TestCheck_ComposeMissing(t *testing.T) {
 	pub, priv, _ := asym.GenerateKeyPair()
-	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest}
+	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest, ComposeDigest: update.Digest(testCompose)}
 	text, sig, _ := update.SignManifest(m, priv)
 
 	rel := fakeReleases{
@@ -79,6 +85,51 @@ func TestCheck_FirstInstall(t *testing.T) {
 		assets: map[string][]byte{
 			update.ManifestAsset:  text,
 			update.SignatureAsset: sig,
+		},
+	}
+	checker := selfupdate.Checker{Releases: rel, PublicKey: pub}
+
+	_, _, err := checker.Check(selfupdate.State{Version: "v1.1.0"})
+	if !errors.Is(err, selfupdate.ErrNoAsset) {
+		t.Errorf("expected ErrNoAsset, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "compose.yaml") {
+		t.Errorf("expected error to name compose.yaml, got %v", err)
+	}
+}
+
+func TestCheck_ComposeAltered(t *testing.T) {
+	pub, priv, _ := asym.GenerateKeyPair()
+	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest, ComposeDigest: update.Digest(testCompose)}
+	text, sig, _ := update.SignManifest(m, priv)
+
+	rel := fakeReleases{
+		tag: "v1.2.0",
+		assets: map[string][]byte{
+			update.ManifestAsset:  text,
+			update.SignatureAsset: sig,
+			update.ComposeAsset:   []byte("name: evil\n"),
+		},
+	}
+	checker := selfupdate.Checker{Releases: rel, PublicKey: pub}
+
+	_, _, err := checker.Check(selfupdate.State{Version: "v1.1.0"})
+	if err == nil || err.Error() != update.ErrComposeMismatch {
+		t.Errorf("expected ErrComposeMismatch, got %v", err)
+	}
+}
+
+func TestCheck_FirstInstall(t *testing.T) {
+	pub, priv, _ := asym.GenerateKeyPair()
+	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest, ComposeDigest: update.Digest(testCompose)}
+	text, sig, _ := update.SignManifest(m, priv)
+
+	rel := fakeReleases{
+		tag: "v1.2.0",
+		assets: map[string][]byte{
+			update.ManifestAsset:  text,
+			update.SignatureAsset: sig,
+			update.ComposeAsset:   testCompose,
 		},
 	}
 
@@ -143,7 +194,7 @@ func TestCheck_LatestFails(t *testing.T) {
 
 func TestCheck_NoSignature(t *testing.T) {
 	pub, priv, _ := asym.GenerateKeyPair()
-	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest}
+	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest, ComposeDigest: update.Digest(testCompose)}
 	text, _, _ := update.SignManifest(m, priv)
 
 	rel := fakeReleases{
@@ -164,7 +215,7 @@ func TestCheck_WrongKey(t *testing.T) {
 	pub, _, _ := asym.GenerateKeyPair()
 	_, priv2, _ := asym.GenerateKeyPair()
 
-	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest}
+	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest, ComposeDigest: update.Digest(testCompose)}
 	text, sig, _ := update.SignManifest(m, priv2)
 
 	rel := fakeReleases{
@@ -172,6 +223,7 @@ func TestCheck_WrongKey(t *testing.T) {
 		assets: map[string][]byte{
 			update.ManifestAsset:  text,
 			update.SignatureAsset: sig,
+			update.ComposeAsset:   testCompose,
 		},
 	}
 	checker := selfupdate.Checker{Releases: rel, PublicKey: pub}
@@ -184,7 +236,7 @@ func TestCheck_WrongKey(t *testing.T) {
 
 func TestCheck_VersionMismatch(t *testing.T) {
 	pub, priv, _ := asym.GenerateKeyPair()
-	m := update.Manifest{Version: "v1.0.9", Image: testImage, Digest: testDigest}
+	m := update.Manifest{Version: "v1.0.9", Image: testImage, Digest: testDigest, ComposeDigest: update.Digest(testCompose)}
 	text, sig, _ := update.SignManifest(m, priv)
 
 	rel := fakeReleases{
@@ -192,6 +244,7 @@ func TestCheck_VersionMismatch(t *testing.T) {
 		assets: map[string][]byte{
 			update.ManifestAsset:  text,
 			update.SignatureAsset: sig,
+			update.ComposeAsset:   testCompose,
 		},
 	}
 	checker := selfupdate.Checker{Releases: rel, PublicKey: pub}

@@ -59,9 +59,17 @@ func (e *fakeEngine) Healthy() bool {
 
 func defaultManifest() update.Manifest {
 	return update.Manifest{
-		Version: "v1.2.0",
-		Image:   "ghcr.io/acme/shop",
-		Digest:  "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		Version:       "v1.2.0",
+		Image:         "ghcr.io/acme/shop",
+		Digest:        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		ComposeDigest: update.Digest([]byte("name: new\n")),
+	}
+}
+
+func defaultUpdate() selfupdate.Update {
+	return selfupdate.Update{
+		Manifest: defaultManifest(),
+		Compose:  []byte("name: new\n"),
 	}
 }
 
@@ -89,6 +97,7 @@ func (c *clock) Sleep(d time.Duration) {
 
 func TestApply_Healthy(t *testing.T) {
 	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("name: old\n"), 0o600)
 	eng := &fakeEngine{healthy: true}
 	clk := &clock{}
 	applier := selfupdate.Applier{
@@ -99,11 +108,21 @@ func TestApply_Healthy(t *testing.T) {
 		Now:    clk.Now,
 		Sleep:  clk.Sleep,
 	}
-	m := defaultManifest()
+	u := defaultUpdate()
+	m := u.Manifest
 	s := defaultState()
-	next, err := applier.Apply(s, m)
+	next, err := applier.Apply(s, u)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	newCompose, _ := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if string(newCompose) != "name: new\n" {
+		t.Errorf("expected new compose, got %q", string(newCompose))
+	}
+	prevCompose, _ := os.ReadFile(filepath.Join(dir, "compose.yaml.prev"))
+	if string(prevCompose) != "name: old\n" {
+		t.Errorf("expected prev compose, got %q", string(prevCompose))
 	}
 
 	newRef := m.Reference()
@@ -142,12 +161,18 @@ func TestApply_Healthy(t *testing.T) {
 
 func TestApply_BackupFails(t *testing.T) {
 	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("name: old\n"), 0o600)
 	expectedErr := errors.New("backup failed")
 	eng := &fakeEngine{backupErr: expectedErr}
 	applier := selfupdate.Applier{Engine: eng, Dir: dir}
-	next, err := applier.Apply(defaultState(), defaultManifest())
+	next, err := applier.Apply(defaultState(), defaultUpdate())
 	if !errors.Is(err, expectedErr) {
 		t.Errorf("expected error %v, got %v", expectedErr, err)
+	}
+
+	compose, _ := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if string(compose) != "name: old\n" {
+		t.Errorf("expected compose untouched, got %q", string(compose))
 	}
 	if len(eng.calls) != 1 || eng.calls[0] != "backup" {
 		t.Errorf("expected calls [backup], got %v", eng.calls)
@@ -166,12 +191,18 @@ func TestApply_BackupFails(t *testing.T) {
 
 func TestApply_PullFails(t *testing.T) {
 	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("name: old\n"), 0o600)
 	expectedErr := errors.New("pull failed")
 	eng := &fakeEngine{pullErr: expectedErr}
 	applier := selfupdate.Applier{Engine: eng, Dir: dir}
-	next, err := applier.Apply(defaultState(), defaultManifest())
+	next, err := applier.Apply(defaultState(), defaultUpdate())
 	if !errors.Is(err, expectedErr) {
 		t.Errorf("expected error %v, got %v", expectedErr, err)
+	}
+
+	compose, _ := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if string(compose) != "name: old\n" {
+		t.Errorf("expected compose untouched, got %q", string(compose))
 	}
 	for _, call := range eng.calls {
 		if strings.HasPrefix(call, "switch") {
@@ -185,6 +216,7 @@ func TestApply_PullFails(t *testing.T) {
 
 func TestApply_Unhealthy(t *testing.T) {
 	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("name: old\n"), 0o600)
 	eng := &fakeEngine{healthy: false}
 	clk := &clock{}
 	applier := selfupdate.Applier{
@@ -195,11 +227,16 @@ func TestApply_Unhealthy(t *testing.T) {
 		Now:    clk.Now,
 		Sleep:  clk.Sleep,
 	}
-	m := defaultManifest()
+	u := defaultUpdate()
 	s := defaultState()
-	next, err := applier.Apply(s, m)
+	next, err := applier.Apply(s, u)
 	if !errors.Is(err, selfupdate.ErrUnhealthy) {
 		t.Errorf("expected ErrUnhealthy, got %v", err)
+	}
+
+	restoredCompose, _ := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if string(restoredCompose) != "name: old\n" {
+		t.Errorf("expected restored compose, got %q", string(restoredCompose))
 	}
 
 	if len(eng.calls) < 3 || eng.calls[len(eng.calls)-1] != "switch "+s.Image {
@@ -221,7 +258,9 @@ func TestApply_Unhealthy(t *testing.T) {
 
 func TestApply_MigrateFails(t *testing.T) {
 	dir := t.TempDir()
-	m := defaultManifest()
+	os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("name: old\n"), 0o600)
+	u := defaultUpdate()
+	m := u.Manifest
 	s := defaultState()
 	fakeErr := errors.New("db disconnected")
 	eng := &fakeEngine{migrateErr: fakeErr}
@@ -235,9 +274,14 @@ func TestApply_MigrateFails(t *testing.T) {
 		Sleep:  clk.Sleep,
 	}
 
-	next, err := applier.Apply(s, m)
+	next, err := applier.Apply(s, u)
 	if !errors.Is(err, selfupdate.ErrMigrate) {
 		t.Errorf("Apply() err = %v, want ErrMigrate", err)
+	}
+
+	restoredCompose, _ := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if string(restoredCompose) != "name: old\n" {
+		t.Errorf("expected restored compose, got %q", string(restoredCompose))
 	}
 	if !strings.Contains(err.Error(), fakeErr.Error()) {
 		t.Errorf("Apply() err = %v, want to contain %v", err, fakeErr)
@@ -278,7 +322,8 @@ func TestApply_MigrateFails(t *testing.T) {
 
 func TestApply_SwitchFailsCountsAsUnhealthy(t *testing.T) {
 	dir := t.TempDir()
-	m := defaultManifest()
+	u := defaultUpdate()
+	m := u.Manifest
 	s := defaultState()
 	switchErr := errors.New("switch failed")
 	eng := &fakeEngine{switchErrFor: m.Reference(), switchErr: switchErr}
@@ -291,7 +336,7 @@ func TestApply_SwitchFailsCountsAsUnhealthy(t *testing.T) {
 		Now:    clk.Now,
 		Sleep:  clk.Sleep,
 	}
-	_, err := applier.Apply(s, m)
+	_, err := applier.Apply(s, u)
 	if !errors.Is(err, selfupdate.ErrUnhealthy) {
 		t.Errorf("expected ErrUnhealthy, got %v", err)
 	}
@@ -305,7 +350,7 @@ func TestApply_SwitchFailsCountsAsUnhealthy(t *testing.T) {
 
 func TestApply_RollbackFails(t *testing.T) {
 	dir := t.TempDir()
-	m := defaultManifest()
+	u := defaultUpdate()
 	s := defaultState()
 	eng := &fakeEngine{healthy: false, switchErrFor: s.Image, switchErr: errors.New("rollback failed")}
 	clk := &clock{}
@@ -317,7 +362,7 @@ func TestApply_RollbackFails(t *testing.T) {
 		Now:    clk.Now,
 		Sleep:  clk.Sleep,
 	}
-	_, err := applier.Apply(s, m)
+	_, err := applier.Apply(s, u)
 	if !errors.Is(err, selfupdate.ErrUnhealthy) {
 		t.Errorf("expected ErrUnhealthy, got %v", err)
 	}
@@ -328,7 +373,7 @@ func TestApply_RollbackFails(t *testing.T) {
 
 func TestApply_FirstInstallUnhealthy(t *testing.T) {
 	dir := t.TempDir()
-	m := defaultManifest()
+	u := defaultUpdate()
 	s := selfupdate.State{}
 	eng := &fakeEngine{healthy: false}
 	clk := &clock{}
@@ -340,9 +385,14 @@ func TestApply_FirstInstallUnhealthy(t *testing.T) {
 		Now:    clk.Now,
 		Sleep:  clk.Sleep,
 	}
-	next, err := applier.Apply(s, m)
+	next, err := applier.Apply(s, u)
 	if !errors.Is(err, selfupdate.ErrUnhealthy) {
 		t.Errorf("expected ErrUnhealthy, got %v", err)
+	}
+
+	newCompose, _ := os.ReadFile(filepath.Join(dir, "compose.yaml"))
+	if string(newCompose) != "name: new\n" {
+		t.Errorf("expected new compose to stay, got %q", string(newCompose))
 	}
 
 	switchCount := 0
@@ -372,14 +422,14 @@ func TestApply_KeepsLastBackups(t *testing.T) {
 		Now:    clk.Now,
 		Sleep:  clk.Sleep,
 	}
-	m := defaultManifest()
+	u := defaultUpdate()
 	s := defaultState()
 
-	_, _ = applier.Apply(s, m)
+	_, _ = applier.Apply(s, u)
 	clk.Sleep(time.Hour)
-	_, _ = applier.Apply(s, m)
+	_, _ = applier.Apply(s, u)
 	clk.Sleep(time.Hour)
-	_, _ = applier.Apply(s, m)
+	_, _ = applier.Apply(s, u)
 
 	backups, _ := os.ReadDir(filepath.Join(dir, selfupdate.DirBackups))
 	if len(backups) != 2 {
