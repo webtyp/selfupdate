@@ -3,6 +3,8 @@ PLAN: "feat: selfupdate.NewTarget implements deploy.Target"
 TAG: v0.0.11
 EXECUTOR: jules
 REVIEWER: none
+STATUS: running
+SESSION: 9349263352996430607
 ---
 
 > Read AGENTS.md at the repo root before any change.
