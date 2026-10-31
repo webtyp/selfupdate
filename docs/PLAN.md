@@ -3,8 +3,10 @@ PLAN: "feat: install provisions /opt/<app> with secret owners/modes, serve runs 
 TAG: v0.0.9
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 16634566308605645944
+PR: https://github.com/webtyp/selfupdate/pull/7
+REVIEWED_COMMIT: 3840ba8635b505c4d1a1fa8cab2dafb139995b8e
 ---
 
 > Read AGENTS.md at the repo root before any change.
