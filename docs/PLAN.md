@@ -411,3 +411,6 @@ Update `README.md` and `docs/ARCHITECTURE.md` to document `selfupdate.NewTarget`
    GOPRIVATE=webtyp.com/*,github.com/veltylabs/* GOFLAGS=-mod=mod gotest
    ```
 2. Commit and open PR.
+
+## Executor notes
+- All steps completed successfully.

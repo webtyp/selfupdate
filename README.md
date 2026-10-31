@@ -17,6 +17,7 @@
 
 1. **On the publisher's machine:**
    - Declare `Target: selfupdate.Server` ([target.go](target.go)) in your app's `config/deploy.go` ([`webtyp/deploy`](https://github.com/webtyp/deploy)).
+   - Setup the target using `selfupdate.NewTarget(selfupdate.TargetConfig{RootDir: "."})` to validate the environment and deployment configuration.
    - Publish at least one signed GitHub Release with [`gorelease`](https://github.com/webtyp/gorelease) and export the base64 P-256 public key by running `gorelease key`.
 2. **On the target Linux server:**
    - Root access (`sudo`) and [Docker Compose v2](https://docs.docker.com/compose/install/) (`docker compose version`).
