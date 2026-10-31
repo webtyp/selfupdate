@@ -73,6 +73,8 @@ During release publication, [`webtyp/gorelease`](https://github.com/webtyp/gorel
 
 Because PostgreSQL unquoted identifiers cannot contain dashes, `ComposeFile` derives the database name `<db>` by replacing `-` with `_` in `App.Name`. The resulting `compose.yaml` is uploaded as a Release asset and its SHA-256 digest is embedded inside the signed `manifest.txt`.
 
+Developers must also declare `selfupdate.NewTarget(selfupdate.TargetConfig{RootDir: "."})` to validate that the required configuration (`web/server/main.go` and runtime secrets via `Store`) and deployment target are valid before allowing a build or deployment.
+
 ### 3.2 First-Time Server Installation — [diagram](diagrams/INSTALL_FLOW.md)
 
 When an operator runs `selfupdate install <owner/repo>` (or calls `selfupdate.Install(cfg)`):
