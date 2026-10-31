@@ -3,8 +3,6 @@ PLAN: "feat: install provisions /opt/<app> with secret owners/modes, serve runs 
 TAG: v0.0.9
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
-SESSION: 18093958513541313435
 ---
 
 > Read AGENTS.md at the repo root before any change.
@@ -538,35 +536,426 @@ Commit.
 ## Stage 3 — tests `tests/install_test.go` and `tests/serve_test.go` (new)
 
 Create `tests/install_test.go`:
-- `TestDecodePublicKey_RawAndBase64`: generates a P-256 key pair with `asym.GenerateKeyPair()`, verifies `DecodePublicKey(pub)` and `DecodePublicKey([]byte(base64.StdEncoding.EncodeToString(pub)+"\n"))` both return `pub`, and invalid bytes return `ErrPublicKey`.
-- `TestInstall_ValidationErrors`: checks `ErrAppRepo`, `ErrPublicKey`, `ErrNoGitHubToken`, `ErrNoTunnelToken`, `ErrNoDNSToken`.
-- `TestInstall_ProvisionsAndStarts`:
-  - Uses `ComposeFile(App{Name: "acme-shop", Domain: "app.example.com", Repo: "acme/shop"})`, signs a manifest for `v1.0.0`, passes a fake `Releases`, fake `Engine`, fake `Up` (recording calls `["db"]` then `[]`) and fake `Chown` (recording `map[string]int` UIDs).
-  - Asserts `state.Version == "v1.0.0"`.
-  - Asserts every file in `secrets/` has mode `0400` and the exact UID recorded by `Chown`:
-    - `db_owner_password`, `db_app_password`, `github_token`: `0`
-    - `initdb.sql`: `selfupdate.PostgresUID` (`999`)
-    - `database_url`, `database_owner_url`, `dns_token`, `supervisor_token`, `tunnel_token`: `selfupdate.NonRootUID` (`65532`)
-  - Asserts `initdb.sql` contains `CREATE ROLE acme_shop_app` and `ALTER DEFAULT PRIVILEGES FOR ROLE acme_shop_owner`.
-  - Asserts `.env` contains `APP_IMAGE=`, `APP_DOMAIN=app.example.com`, `SUPERVISOR_IMAGE=`, `LAN_ADDRESS=127.0.0.1`.
-  - Re-runs `Install` on the same directory and asserts `db_owner_password`, `db_app_password` and `supervisor_token` are preserved (idempotent).
-- `TestInstall_Unhealthy`: when `Engine` is unhealthy, returns `ErrUnhealthy` and does not write `state.json`.
+
+```go
+package tests
+
+import (
+	"encoding/base64"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"webtyp.com/crypto/asym"
+	"webtyp.com/selfupdate"
+	"webtyp.com/update"
+)
+
+func buildInstallRelease(t *testing.T, pub, priv []byte) fakeReleases {
+	t.Helper()
+	compose, err := selfupdate.ComposeFile(selfupdate.App{
+		Name:   "acme-shop",
+		Domain: "app.example.com",
+		Repo:   "acme/shop",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := update.Manifest{
+		Version:       "v1.0.0",
+		Image:         testImage,
+		Digest:        testDigest,
+		ComposeDigest: update.Digest(compose),
+	}
+	text, sig, err := update.SignManifest(m, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fakeReleases{
+		tag: "v1.0.0",
+		assets: map[string][]byte{
+			update.ManifestAsset:  text,
+			update.SignatureAsset: sig,
+			update.ComposeAsset:   compose,
+		},
+	}
+}
+
+func TestDecodePublicKey_RawAndBase64(t *testing.T) {
+	pub, _, err := asym.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRaw, err := selfupdate.DecodePublicKey(pub)
+	if err != nil || string(gotRaw) != string(pub) {
+		t.Fatalf("DecodePublicKey(raw) err = %v", err)
+	}
+	b64 := base64.StdEncoding.EncodeToString(pub) + "\n"
+	gotB64, err := selfupdate.DecodePublicKey([]byte(b64))
+	if err != nil || string(gotB64) != string(pub) {
+		t.Fatalf("DecodePublicKey(b64) err = %v", err)
+	}
+	if _, err := selfupdate.DecodePublicKey([]byte("not-a-key")); !errors.Is(err, selfupdate.ErrPublicKey) {
+		t.Fatalf("expected ErrPublicKey, got %v", err)
+	}
+}
+
+func TestInstall_ValidationErrors(t *testing.T) {
+	pub, _, _ := asym.GenerateKeyPair()
+	b64 := base64.StdEncoding.EncodeToString(pub)
+
+	cases := []struct {
+		cfg  selfupdate.InstallConfig
+		want error
+	}{
+		{selfupdate.InstallConfig{Repo: "bad"}, selfupdate.ErrAppRepo},
+		{selfupdate.InstallConfig{Repo: "acme/shop", PublicKey: "bad"}, selfupdate.ErrPublicKey},
+		{selfupdate.InstallConfig{Repo: "acme/shop", PublicKey: b64}, selfupdate.ErrNoGitHubToken},
+		{selfupdate.InstallConfig{Repo: "acme/shop", PublicKey: b64, GitHubToken: "gh"}, selfupdate.ErrNoTunnelToken},
+		{selfupdate.InstallConfig{Repo: "acme/shop", PublicKey: b64, GitHubToken: "gh", TunnelToken: "tun"}, selfupdate.ErrNoDNSToken},
+	}
+	for _, tc := range cases {
+		_, err := selfupdate.Install(tc.cfg)
+		if !errors.Is(err, tc.want) {
+			t.Errorf("Install(%+v) = %v, want %v", tc.cfg, err, tc.want)
+		}
+	}
+}
+
+func TestInstall_ProvisionsAndStarts(t *testing.T) {
+	pub, priv, err := asym.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := buildInstallRelease(t, pub, priv)
+	root := t.TempDir()
+	eng := &fakeEngine{healthyAfter: 1}
+	var upCalls [][]string
+	uidByFile := make(map[string]int)
+
+	cfg := selfupdate.InstallConfig{
+		Repo:        "acme/shop",
+		Root:        root,
+		PublicKey:   base64.StdEncoding.EncodeToString(pub),
+		GitHubToken: "gh-secret",
+		TunnelToken: "tun-secret",
+		DNSToken:    "dns-secret",
+		Releases:    rel,
+		Engine:      func(string) selfupdate.Engine { return eng },
+		Up: func(_ string, services ...string) error {
+			upCalls = append(upCalls, services)
+			return nil
+		},
+		Chown: func(path string, uid, _ int) error {
+			name := strings.TrimSuffix(filepath.Base(path), ".tmp")
+			uidByFile[name] = uid
+			return nil
+		},
+		Wait:  10 * time.Second,
+		Every: time.Second,
+		Sleep: func(time.Duration) {},
+	}
+
+	st, err := selfupdate.Install(cfg)
+	if err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+	if st.Version != "v1.0.0" {
+		t.Fatalf("Version = %q, want v1.0.0", st.Version)
+	}
+	if len(upCalls) != 2 || len(upCalls[0]) != 1 || upCalls[0][0] != selfupdate.ServiceDB || len(upCalls[1]) != 0 {
+		t.Fatalf("unexpected Up calls: %+v", upCalls)
+	}
+
+	appDir := filepath.Join(root, "acme-shop")
+	secretsDir := filepath.Join(appDir, selfupdate.DirSecrets)
+	wantUID := map[string]int{
+		selfupdate.SecretDBOwner:          0,
+		selfupdate.SecretDBApp:            0,
+		selfupdate.FileInitDB:             selfupdate.PostgresUID,
+		selfupdate.SecretDatabaseURL:      selfupdate.NonRootUID,
+		selfupdate.SecretDatabaseOwnerURL: selfupdate.NonRootUID,
+		selfupdate.SecretDNSToken:         selfupdate.NonRootUID,
+		selfupdate.SecretSupervisorToken:  selfupdate.NonRootUID,
+		selfupdate.SecretTunnelToken:      selfupdate.NonRootUID,
+		selfupdate.SecretGitHubToken:      0,
+	}
+	for name, want := range wantUID {
+		info, err := os.Stat(filepath.Join(secretsDir, name))
+		if err != nil {
+			t.Fatalf("missing secret %s: %v", name, err)
+		}
+		if info.Mode().Perm() != 0o400 {
+			t.Errorf("%s mode = %o, want 0400", name, info.Mode().Perm())
+		}
+		if uidByFile[name] != want {
+			t.Errorf("%s uid = %d, want %d", name, uidByFile[name], want)
+		}
+	}
+
+	sqlBytes, err := os.ReadFile(filepath.Join(secretsDir, selfupdate.FileInitDB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(sqlBytes)
+	if !strings.Contains(sql, "CREATE ROLE acme_shop_app") || !strings.Contains(sql, "ALTER DEFAULT PRIVILEGES FOR ROLE acme_shop_owner") {
+		t.Fatalf("unexpected initdb.sql: %s", sql)
+	}
+
+	envBytes, err := os.ReadFile(filepath.Join(appDir, selfupdate.FileEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	envText := string(envBytes)
+	for _, wantLine := range []string{
+		"APP_IMAGE=" + testImage + "@" + testDigest,
+		"APP_DOMAIN=app.example.com",
+		"SUPERVISOR_IMAGE=" + selfupdate.DefaultSupervisorImage,
+		"LAN_ADDRESS=127.0.0.1",
+	} {
+		if !strings.Contains(envText, wantLine) {
+			t.Errorf(".env missing %q in:\n%s", wantLine, envText)
+		}
+	}
+
+	owner1, _ := os.ReadFile(filepath.Join(secretsDir, selfupdate.SecretDBOwner))
+	sup1, _ := os.ReadFile(filepath.Join(secretsDir, selfupdate.SecretSupervisorToken))
+	if _, err := selfupdate.Install(cfg); err != nil {
+		t.Fatalf("second Install failed: %v", err)
+	}
+	owner2, _ := os.ReadFile(filepath.Join(secretsDir, selfupdate.SecretDBOwner))
+	sup2, _ := os.ReadFile(filepath.Join(secretsDir, selfupdate.SecretSupervisorToken))
+	if string(owner1) != string(owner2) || string(sup1) != string(sup2) {
+		t.Fatal("expected second Install to preserve generated database and supervisor secrets")
+	}
+}
+
+func TestInstall_Unhealthy(t *testing.T) {
+	pub, priv, _ := asym.GenerateKeyPair()
+	rel := buildInstallRelease(t, pub, priv)
+	root := t.TempDir()
+	clk := &clock{}
+	eng := &fakeEngine{healthyAfter: 999}
+
+	cfg := selfupdate.InstallConfig{
+		Repo:        "acme/shop",
+		Root:        root,
+		PublicKey:   base64.StdEncoding.EncodeToString(pub),
+		GitHubToken: "gh",
+		TunnelToken: "tun",
+		DNSToken:    "dns",
+		Releases:    rel,
+		Engine:      func(string) selfupdate.Engine { return eng },
+		Up:          func(string, ...string) error { return nil },
+		Chown:       func(string, int, int) error { return nil },
+		Wait:        6 * time.Second,
+		Every:       3 * time.Second,
+		Now:         clk.Now,
+		Sleep:       clk.Sleep,
+	}
+	_, err := selfupdate.Install(cfg)
+	if !errors.Is(err, selfupdate.ErrUnhealthy) {
+		t.Fatalf("got %v, want ErrUnhealthy", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "acme-shop", selfupdate.FileState)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no state.json on unhealthy install, got %v", err)
+	}
+}
+```
 
 Create `tests/serve_test.go`:
-- `TestOpenSupervisor_MissingFiles`: checks `ErrAppRepo`, `ErrPublicKey`, `ErrNoGitHubToken`, `ErrNoSupervisorToken`.
-- `TestOpenSupervisor_AndBackupLoop`: provisions a temp dir via `Install`, opens supervisor via `OpenSupervisor`, runs `RunBackupLoop(ctx, sup, 5*time.Millisecond)` until a `.sql` dump appears in `backups/`, cancels `ctx`, and verifies `sup.Handler(token)` answers `200` on `GET /status` with version `v1.0.0`.
+
+```go
+package tests
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"webtyp.com/crypto/asym"
+	"webtyp.com/selfupdate"
+)
+
+func TestOpenSupervisor_MissingFiles(t *testing.T) {
+	dir := t.TempDir()
+	if _, _, err := selfupdate.OpenSupervisor(dir, "bad", nil, nil); !errors.Is(err, selfupdate.ErrAppRepo) {
+		t.Fatalf("got %v, want ErrAppRepo", err)
+	}
+	if _, _, err := selfupdate.OpenSupervisor(dir, "acme/shop", nil, nil); !errors.Is(err, selfupdate.ErrPublicKey) {
+		t.Fatalf("got %v, want ErrPublicKey", err)
+	}
+	pub, _, _ := asym.GenerateKeyPair()
+	os.WriteFile(filepath.Join(dir, selfupdate.FilePublicKey), pub, 0o600)
+	if _, _, err := selfupdate.OpenSupervisor(dir, "acme/shop", nil, nil); !errors.Is(err, selfupdate.ErrNoGitHubToken) {
+		t.Fatalf("got %v, want ErrNoGitHubToken", err)
+	}
+	secretsDir := filepath.Join(dir, selfupdate.DirSecrets)
+	os.MkdirAll(secretsDir, 0o700)
+	os.WriteFile(filepath.Join(secretsDir, selfupdate.SecretGitHubToken), []byte("gh"), 0o600)
+	if _, _, err := selfupdate.OpenSupervisor(dir, "acme/shop", nil, nil); !errors.Is(err, selfupdate.ErrNoSupervisorToken) {
+		t.Fatalf("got %v, want ErrNoSupervisorToken", err)
+	}
+}
+
+func TestOpenSupervisor_AndBackupLoop(t *testing.T) {
+	pub, priv, _ := asym.GenerateKeyPair()
+	rel := buildInstallRelease(t, pub, priv)
+	root := t.TempDir()
+	eng := &fakeEngine{healthyAfter: 1}
+
+	cfg := selfupdate.InstallConfig{
+		Repo:        "acme/shop",
+		Root:        root,
+		PublicKey:   base64.StdEncoding.EncodeToString(pub),
+		GitHubToken: "gh-secret",
+		TunnelToken: "tun-secret",
+		DNSToken:    "dns-secret",
+		Releases:    rel,
+		Engine:      func(string) selfupdate.Engine { return eng },
+		Up:          func(string, ...string) error { return nil },
+		Chown:       func(string, int, int) error { return nil },
+		Wait:        5 * time.Second,
+		Every:       time.Second,
+		Sleep:       func(time.Duration) {},
+	}
+	if _, err := selfupdate.Install(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	appDir := filepath.Join(root, "acme-shop")
+	sup, token, err := selfupdate.OpenSupervisor(appDir, "acme/shop", rel, eng)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go selfupdate.RunBackupLoop(ctx, sup, 5*time.Millisecond)
+
+	backupsDir := filepath.Join(appDir, selfupdate.DirBackups)
+	deadline := time.Now().Add(2 * time.Second)
+	found := false
+	for time.Now().Before(deadline) {
+		entries, _ := os.ReadDir(backupsDir)
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".sql") {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	if !found {
+		t.Fatal("expected RunBackupLoop to write a .sql dump into backups/")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, selfupdate.PathStatus, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	sup.Handler(token).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "v1.0.0") {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+```
 
 Run `gotest`: green. Commit.
 
 ## Stage 4 — CLI `cmd/selfupdate/main.go`, `Dockerfile` and `.github/workflows/release.yml` (new)
 
 Create `cmd/selfupdate/main.go`:
-- Subcommand `serve <owner/repo> <app>`:
-  - Calls `sup, token, err := selfupdate.OpenSupervisor(selfupdate.AppDir(app), repo, nil, nil)`.
-  - Starts `go selfupdate.RunBackupLoop(context.Background(), sup, selfupdate.BackupInterval)`.
-  - Runs `http.ListenAndServe(":"+selfupdate.SupervisorPort, sup.Handler(token))`.
-- Subcommand `install <owner/repo>`:
-  - Reads `PUBLIC_KEY`, `GITHUB_TOKEN`, `TUNNEL_TOKEN`, `DNS_TOKEN`, `LAN_ADDRESS`, `SUPERVISOR_IMAGE` from environment variables (or prompts on `os.Stdin` line-by-line when an env var is empty), calls `selfupdate.Install(cfg)`, prints the installed version to stdout and exits 0 (or prints error to stderr and exits 1).
+
+```go
+package main
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+
+	"webtyp.com/selfupdate"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(1)
+	}
+	switch os.Args[1] {
+	case "serve":
+		if len(os.Args) != 4 {
+			usage()
+			os.Exit(1)
+		}
+		repo, app := os.Args[2], os.Args[3]
+		sup, token, err := selfupdate.OpenSupervisor(selfupdate.AppDir(app), repo, nil, nil)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		go selfupdate.RunBackupLoop(context.Background(), sup, selfupdate.BackupInterval)
+		if err := http.ListenAndServe(":"+selfupdate.SupervisorPort, sup.Handler(token)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "install":
+		if len(os.Args) != 3 {
+			usage()
+			os.Exit(1)
+		}
+		in := bufio.NewReader(os.Stdin)
+		cfg := selfupdate.InstallConfig{
+			Repo:            os.Args[2],
+			PublicKey:       envOrPrompt(in, "PUBLIC_KEY", "Publisher public key (update.pub, base64): "),
+			GitHubToken:     envOrPrompt(in, "GITHUB_TOKEN", "GitHub read token: "),
+			TunnelToken:     envOrPrompt(in, "TUNNEL_TOKEN", "Cloudflare Tunnel token: "),
+			DNSToken:        envOrPrompt(in, "DNS_TOKEN", "Cloudflare DNS API token: "),
+			LANAddress:      os.Getenv(selfupdate.EnvLANAddress),
+			SupervisorImage: os.Getenv(selfupdate.EnvSupervisorImage),
+		}
+		st, err := selfupdate.Install(cfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(st.Version)
+	default:
+		usage()
+		os.Exit(1)
+	}
+}
+
+func envOrPrompt(in *bufio.Reader, key, prompt string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	fmt.Fprint(os.Stderr, prompt)
+	line, _ := in.ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, "Usage:\n  selfupdate install <owner/repo>\n  selfupdate serve <owner/repo> <app>")
+}
+```
 
 Create `Dockerfile`:
 
