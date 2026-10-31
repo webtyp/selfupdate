@@ -14,6 +14,13 @@ var (
 	ErrVersionMismatch = errors.New("selfupdate: manifest version differs from the release tag")
 )
 
+// Update is a verified version ready to apply: its signed manifest and the
+// compose file whose digest the manifest carries.
+type Update struct {
+	Manifest update.Manifest
+	Compose  []byte
+}
+
 // Checker finds a newer version whose manifest the publisher signed.
 // Example: m, ok, err := selfupdate.Checker{Releases: gh, PublicKey: pub}.Check(state)
 type Checker struct {
@@ -22,33 +29,40 @@ type Checker struct {
 }
 
 // Check returns the latest version when it is newer than the running one, was
-// never marked as failed, and its manifest verifies; ok is false when there is
+// never marked as failed, and its manifest and compose file verify; ok is false when there is
 // nothing to install. With no running version (first install) any release is newer.
-func (c Checker) Check(s State) (m update.Manifest, ok bool, err error) {
+func (c Checker) Check(s State) (u Update, ok bool, err error) {
 	r, err := c.Releases.Latest()
 	if err != nil {
-		return update.Manifest{}, false, err
+		return Update{}, false, err
 	}
 	newer := s.Version == "" || update.IsOutdated(s.Version, r.Tag)
 	if !newer || s.HasFailed(r.Tag) {
-		return update.Manifest{}, false, nil
+		return Update{}, false, nil
 	}
 	text, err := c.asset(r, update.ManifestAsset)
 	if err != nil {
-		return update.Manifest{}, false, err
+		return Update{}, false, err
 	}
 	sig, err := c.asset(r, update.SignatureAsset)
 	if err != nil {
-		return update.Manifest{}, false, err
+		return Update{}, false, err
 	}
-	m, err = update.VerifyManifest(text, sig, c.PublicKey)
+	m, err := update.VerifyManifest(text, sig, c.PublicKey)
 	if err != nil {
-		return update.Manifest{}, false, err
+		return Update{}, false, err
 	}
 	if m.Version != r.Tag {
-		return update.Manifest{}, false, fmt.Errorf("%w: manifest %s, tag %s", ErrVersionMismatch, m.Version, r.Tag)
+		return Update{}, false, fmt.Errorf("%w: manifest %s, tag %s", ErrVersionMismatch, m.Version, r.Tag)
 	}
-	return m, true, nil
+	compose, err := c.asset(r, update.ComposeAsset)
+	if err != nil {
+		return Update{}, false, err
+	}
+	if err := m.CheckCompose(compose); err != nil {
+		return Update{}, false, err
+	}
+	return Update{Manifest: m, Compose: compose}, true, nil
 }
 
 func (c Checker) asset(r Release, name string) ([]byte, error) {

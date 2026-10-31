@@ -16,5 +16,8 @@ flowchart TD
     F -->|no| X3[ErrManifestSignature]
     F -->|yes| G{Manifest version<br/>equals the tag?}
     G -->|no| X4[ErrVersionMismatch]
-    G -->|yes| H[Available: image at its digest]
+    G -->|yes| C{compose.yaml in the Release<br/>and equal to the signed digest?}
+    C -->|no asset| X2
+    C -->|different| X5[ErrComposeMismatch]
+    C -->|yes| H[Available: image and compose]
 ```

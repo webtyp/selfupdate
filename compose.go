@@ -142,11 +142,7 @@ func setEnv(path, key, value string) error {
 	if !found {
 		out = append(out, key+envSeparator+value)
 	}
-	tmp := path + tmpSuffix
-	if err := os.WriteFile(tmp, []byte(strings.Join(out, lineEnd)+lineEnd), stateFileMode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeAtomic(path, []byte(strings.Join(out, lineEnd)+lineEnd))
 }
 
 func readEnv(path, key string) (string, error) {

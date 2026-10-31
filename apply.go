@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"webtyp.com/update"
 )
 
 var (
@@ -23,14 +22,15 @@ var (
 )
 
 const (
-	defaultWait      = 120 * time.Second
-	defaultEvery     = 3 * time.Second
-	defaultKeep      = 7
-	backupSuffix     = ".sql"
-	backupDirMode    = 0o700
-	backupTimeLayout = "20060102-150405"
-	backupNameSep    = "_"
-	noVersion        = "none"
+	defaultWait       = 120 * time.Second
+	defaultEvery      = 3 * time.Second
+	defaultKeep       = 7
+	backupSuffix      = ".sql"
+	backupDirMode     = 0o700
+	backupTimeLayout  = "20060102-150405"
+	backupNameSep     = "_"
+	noVersion         = "none"
+	composePrevSuffix = ".prev"
 )
 
 // Engine is what applying a version needs from Docker. Compose implements it.
@@ -56,7 +56,8 @@ type Applier struct {
 }
 
 // Apply runs docs/diagrams/APPLY_FLOW.md and returns the state to keep (also saved).
-func (a Applier) Apply(s State, m update.Manifest) (State, error) {
+func (a Applier) Apply(s State, u Update) (State, error) {
+	m := u.Manifest
 	if err := a.backup(s.Version); err != nil {
 		return s, err
 	}
@@ -64,14 +65,18 @@ func (a Applier) Apply(s State, m update.Manifest) (State, error) {
 	if err := a.Engine.Pull(ref); err != nil {
 		return s, err
 	}
+	if err := a.installCompose(u.Compose); err != nil {
+		return s, err
+	}
 	if err := a.Engine.Migrate(ref); err != nil {
 		failed := s
 		failed.Failed = append(append([]string(nil), s.Failed...), m.Version)
 		result := fmt.Errorf("%w: %v", ErrMigrate, err)
+		result = errors.Join(result, a.restoreCompose())
 		if saveErr := failed.Save(a.statePath()); saveErr != nil {
 			return failed, errors.Join(result, saveErr)
 		}
-		return failed, errors.Join(result, err)
+		return failed, result
 	}
 	switchErr := a.Engine.Switch(ref)
 	if switchErr == nil && a.waitHealthy() {
@@ -84,6 +89,7 @@ func (a Applier) Apply(s State, m update.Manifest) (State, error) {
 	if switchErr != nil {
 		result = errors.Join(ErrUnhealthy, switchErr)
 	}
+	result = errors.Join(result, a.restoreCompose())
 	if s.Image != "" {
 		if err := a.Engine.Switch(s.Image); err != nil {
 			result = errors.Join(result, fmt.Errorf("%w: %v", ErrRollback, err))
@@ -93,6 +99,40 @@ func (a Applier) Apply(s State, m update.Manifest) (State, error) {
 		result = errors.Join(result, err)
 	}
 	return failed, result
+}
+
+// installCompose keeps the running compose as .prev and writes the new one (owner-only, atomic).
+func (a Applier) installCompose(data []byte) error {
+	path := filepath.Join(a.Dir, FileCompose)
+	if old, err := os.ReadFile(path); err == nil {
+		if err := writeAtomic(path+composePrevSuffix, old); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return writeAtomic(path, data)
+}
+
+// restoreCompose puts the previous compose back; with no .prev (first install) there is nothing to restore.
+func (a Applier) restoreCompose() error {
+	path := filepath.Join(a.Dir, FileCompose)
+	old, err := os.ReadFile(path + composePrevSuffix)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return writeAtomic(path, old)
+}
+
+func writeAtomic(path string, data []byte) error {
+	tmp := path + tmpSuffix
+	if err := os.WriteFile(tmp, data, stateFileMode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (a Applier) waitHealthy() bool {

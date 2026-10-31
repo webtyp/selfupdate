@@ -17,7 +17,7 @@ func defaultSupervisor(t *testing.T, eng selfupdate.Engine) (*selfupdate.Supervi
 	selfupdate.State{Version: "v1.1.0", Image: "ghcr.io/acme/shop@sha256:0000000000000000000000000000000000000000000000000000000000000000"}.Save(statePath)
 
 	pub, priv, _ := asym.GenerateKeyPair()
-	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest}
+	m := update.Manifest{Version: "v1.2.0", Image: testImage, Digest: testDigest, ComposeDigest: update.Digest(testCompose)}
 	text, sig, _ := update.SignManifest(m, priv)
 
 	rel := fakeReleases{
@@ -25,6 +25,7 @@ func defaultSupervisor(t *testing.T, eng selfupdate.Engine) (*selfupdate.Supervi
 		assets: map[string][]byte{
 			update.ManifestAsset:  text,
 			update.SignatureAsset: sig,
+			update.ComposeAsset:   testCompose,
 		},
 	}
 	checker := selfupdate.Checker{Releases: rel, PublicKey: pub}

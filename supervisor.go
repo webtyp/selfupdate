@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-
-	"webtyp.com/update"
 )
 
 // Phase is where the supervisor is (docs/diagrams/PHASES.md).
@@ -57,7 +55,7 @@ type Supervisor struct {
 
 	mu        sync.Mutex
 	phase     Phase
-	available *update.Manifest
+	available *Update
 	message   string
 }
 
@@ -76,7 +74,7 @@ func (s *Supervisor) Status() Status {
 		st.Message = err.Error()
 	}
 	if s.available != nil {
-		st.Available = s.available.Version
+		st.Available = s.available.Manifest.Version
 	}
 	return st
 }
