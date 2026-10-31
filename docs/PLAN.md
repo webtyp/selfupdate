@@ -3,8 +3,10 @@ PLAN: "feat: selfupdate.NewTarget implements deploy.Target"
 TAG: v0.0.11
 EXECUTOR: jules
 REVIEWER: none
-STATUS: running
+STATUS: review
 SESSION: 9349263352996430607
+PR: https://github.com/webtyp/selfupdate/pull/8
+REVIEWED_COMMIT: 8bcce1f9b78055d80962a0d9fdca74c0a6c05228
 ---
 
 > Read AGENTS.md at the repo root before any change.
