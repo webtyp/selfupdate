@@ -5,7 +5,7 @@ go 1.26.8
 require (
 	webtyp.com/crypto v0.0.30
 	webtyp.com/deploy v0.2.114
-	webtyp.com/lang v0.1.15
+	webtyp.com/lang v0.1.16
 	webtyp.com/update v0.0.6
 )
 
